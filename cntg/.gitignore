@@ -4,3 +4,6 @@ config.yml
 data/
 map/
 graph/
+.idea/
+experiment.yml
+outmap/

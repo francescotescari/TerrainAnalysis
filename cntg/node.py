@@ -1,3 +1,5 @@
+from enum import Enum
+
 import wifi
 import ubiquiti as ubnt
 import random
@@ -18,6 +20,17 @@ class LinkUnfeasibilty(Exception):
 class ChannelExahustion(Exception):
     msg = "No more channels"
     pass
+
+class CostChoice(Enum):
+    NOT_INTERESTED = 1
+    LEAF_NODE = 2
+    SUPER_NODE = 3
+
+    def __str__(self):
+        return self.name
+
+
+
 
 
 class Node:
@@ -91,3 +104,22 @@ class Node:
             return channel
         except ValueError:
             raise ChannelExahustion
+
+
+class CostNode(Node):
+    """Extension of node object with cost choice property"""
+
+    def __init__(self, choice, max_ant, building, properties=None):
+        self.cost_choice = choice
+        self.properties = {} if properties is None else properties
+        self.building = building
+        super().__init__(max_ant)
+
+    def props_str(self):
+        res = "Node type: " + str(self.cost_choice) + "<br>"
+        for key, value in self.properties.items():
+            try:
+                res += str(key) + ": " + str(value) + "<br>"
+            except Exception:
+                pass
+        return res.replace("'",'"')

@@ -2,6 +2,7 @@
 
 from cn_generator import CN_Generator
 from misc import NoGWError
+from strategies.cost_strategy import CostStrategy
 from strategies.growing_network import Growing_network
 from strategies.pref_attachment import Pref_attachment
 import configargparse
@@ -9,7 +10,8 @@ import configargparse
 
 STRATEGIES = {
     'growing_network': Growing_network,
-    'pref_attachment': Pref_attachment
+    'pref_attachment': Pref_attachment,
+    'cost': CostStrategy
 }
 
 
@@ -57,6 +59,7 @@ def parse_args():
     parser.add_argument("--dsn", help="DSN to for the connection to PostGIS", required=True)
     parser.add_argument("--lidar_table", help="pointcloud table containing lidar/srtm data", required=True)
     parser.add_argument("--base_folder", help="Output base folder for the data", required=True)
+    parser.add_argument("--cost_interface")
     parser.set_defaults(plot=False)
     args, unknown = parser.parse_known_args()
     return args, unknown

@@ -23,7 +23,7 @@ class Growing_network_exposed(Growing_network):
                                   list(self.infected.values()), new_node) if link]
         visible_links_exposed = [link for link in self.check_connectivity(
                                   list(self.exposed), new_node) if link]
-        self.add_node(new_node)
+        self.add_building(new_node)
         node_added = False
         # FIXME: there is a bug involving infected. sometimes there are more nodes in the graph than infected
         if visible_links_infected:

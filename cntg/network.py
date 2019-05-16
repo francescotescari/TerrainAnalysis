@@ -1,5 +1,6 @@
 import networkx as nx
 from antenna import Antenna
+from cost_model import CostError
 from node import Node
 import ubiquiti as ubnt
 import numpy
@@ -43,10 +44,12 @@ class Network():
                             **attrs)
         self.gateway = building.gid
 
-    def add_node(self, building, attrs={}):
+    def add_node(self, building, node=None, attrs={}):
+        if node is None:
+            node = Node(self.max_dev)
         self.graph.add_node(building.gid,
                             pos=building.xy(),
-                            node=Node(self.max_dev),
+                            node=node,
                             **attrs)
 
     def del_node(self, building):
@@ -209,8 +212,8 @@ class Network():
                 pass
         nx.write_graphml(self.graph, filename)
 
-    def calc_metric(self, link):
-        self.add_node(link['src'])
+    def calc_metric(self, link, node=None):
+        self.add_node(link['src'], node)
         try:
             src_ant = self.add_link_generic(link)
         except (LinkUnfeasibilty, AntennasExahustion, ChannelExahustion) as e:
@@ -345,3 +348,6 @@ class Network():
                                             for x in self.graph.nodes(data=True)])\
                                                     /len(min_bandwidth)
         return metrics
+
+
+

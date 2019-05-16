@@ -48,7 +48,7 @@ class Pref_attachment(CN_Generator):
                 print("First Node")
                 # This is the first node we add so we have to ignore the metric and add it
                 self.infected[m['link']['src'].gid] = m['link']['src']
-                self.add_node(m['link']['src'])
+                self.add_building(m['link']['src'])
                 src_ant = self.add_link(m['link'])
                 return True
             if not m['min_bw']:
@@ -67,7 +67,7 @@ class Pref_attachment(CN_Generator):
                                  reverse=True)
         link = ordered_metrics.pop()['link']
         self.infected[link['src'].gid] = link['src']
-        self.add_node(link['src'])
+        self.add_building(link['src'])
         # Don't need to try since the unvalid link have been excluded by calc_metric()
         src_ant = self.add_link(link)
         # Add the remaining links if needed

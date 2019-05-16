@@ -43,7 +43,7 @@ class Growing_network(CN_Generator):
         while (visible_links):
             link = visible_links.pop()
             self.infected[link['src'].gid] = link['src']
-            self.add_node(link['src'])
+            self.add_building(link['src'])
             try:
                 src_ant = self.add_link(link)
             except (LinkUnfeasibilty) as e:

@@ -24,3 +24,21 @@ class Susceptible_Buffer():
 
 class NoGWError(Exception):
     pass
+
+
+class BuildingUtils:
+    project = partial(
+        pyproj.transform,
+        pyproj.Proj(init='epsg:4326'),  # source coordinate system
+        pyproj.Proj(init='epsg:3003'))  # destination coordinate system
+
+    deproject = partial(
+        pyproj.transform,
+        pyproj.Proj(init='epsg:3003'),  # source coordinate system
+        pyproj.Proj(init='epsg:4326'))  # destination coordinate system
+
+    @staticmethod
+    def get_building_volume(building):
+        shape = building.shape()
+        metric_shape = transform(BuildingUtils.project, shape)
+        return metric_shape.area * 1;
