@@ -1,18 +1,20 @@
+from enum import Enum
+
 import math
 
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 import numpy
-from cost_model import IstatCostModel, TestCostModel, CostError, CostModel
+from cost_model import IstatCostModel, CostError, MetricType, ConstCostModel
 from scipy.stats import norm
 from geoalchemy2.shape import from_shape, to_shape
 
 from misc import BuildingUtils
+from node import CostChoice
 
 
 class CostInterfaceError(CostError):
-    def __init__(self, msg):
-        super().__init__(msg)
+    """Raised from cost-related function errors"""
 
 
 class CostInterface:
@@ -24,7 +26,8 @@ class CostInterface:
         self.apply_model = apply_model
 
     def get(self, building):
-        return self.apply_model(building, self.get_model(building), self.parameters)
+        a = self.apply_model(building, self.get_model(building), self.parameters)
+        return a
 
     def get_model(self, building):
         raise NotImplementedError
@@ -36,9 +39,6 @@ class CostInterface:
             self.cache[building.gid] = self.get(building)
         return self.cache[building.gid]
 
-    def add_param(self, name, threshold_join, threshold_super):
-        self.parameters[name] = (threshold_join, threshold_super)
-
 
 class IstatCostInterface(CostInterface):
 
@@ -48,13 +48,17 @@ class IstatCostInterface(CostInterface):
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         self.bi = bi
-        self.parameters["people"] = PolyCostParam([(1, 0), (5, 1)])
+        self.parameters["people"] = PolyCostParam([(0.5, 0), (16, 1)])
+        self.parameters["avg_age"] = SegmentCostParam(
+            [(0, -1), (10, 0), (17, 0.6), (20, 0.7), (23, 1), (33, 1.5), (40, 1), (50, 0.9), (60, 0.7), (70, 0.5),
+             (100, 0.2)], 0.5)
         # self.PARAMS["test"] = (1, 4)
 
     def load_model_by_area(self, area):
         # get all the istat models intersecting the area
         result = self.session.query(IstatCostModel).filter(IstatCostModel.geom.ST_Intersects(area)).first()
         if result is not None:
+            print("Loading building of istat area: ", result.gid)
             buildings = result.load_buildings(self.bi)
             for building in buildings:
                 self.cache[building.gid] = self.apply_model(building, result, self.parameters)
@@ -62,6 +66,24 @@ class IstatCostInterface(CostInterface):
 
     def get_model(self, building):
         return self.load_model_by_area(building.geom)
+
+
+class ConstCostInterface(CostInterface):
+
+    def __init__(self, cost_choice):
+        super().__init__(AppliedConstModel)
+        if cost_choice is CostChoice.SUPER_NODE:
+            self.ths = (0, 0)
+        elif cost_choice is CostChoice.LEAF_NODE:
+            self.ths = (0, 1)
+        else:
+            self.ths = (1, 1)
+
+    def get_model(self, building):
+        return ConstCostModel({})
+
+    def get(self, building):
+        return AppliedConstModel(building, self.ths)
 
 
 class CostParam:
@@ -76,7 +98,7 @@ class PolyCostParam(CostParam):
     def normalize(self, value):
         return numpy.polyval(self.polynomial, value)
 
-    def __init__(self, points, degree=-1, weight=1):
+    def __init__(self, points, degree=-1, weight=1.0):
         super().__init__(weight)
         x, y = [], []
         for point in points:
@@ -87,22 +109,55 @@ class PolyCostParam(CostParam):
         self.polynomial = numpy.polyfit(x, y, degree)
 
 
+class SegmentCostParam(CostParam):
+    def normalize(self, value):
+        f = None
+        for key, val in self.funcs.items():
+            f = val
+            if value < key:
+                break
+        assert f is not None
+        return f.normalize(value)
+
+    def __init__(self, points, weight=1.0):
+        super().__init__(weight)
+        if len(points) < 2:
+            raise CostInterfaceError("Minimum of two points are necessary in segment cost param")
+        last_point = points[0]
+        funcs = {}
+        for i in range(1, len(points)):
+            p = points[i]
+            funcs[p[0]] = PolyCostParam([last_point, p])
+            last_point = p
+        self.funcs = funcs
 
 
 class AppliedCostModel:
+    @staticmethod
+    def weighted_avg_std(values, weights):
+        if len(values) == 0 or len(values) != len(weights):
+            raise ValueError("Invalid number of weights" if values else "Empty value list")
+        average = numpy.average(values, weights=weights)
+        variance = numpy.average([(value - average) ** 2 for value in values], weights=weights)
+        return average, math.sqrt(variance)
+
+    @staticmethod
+    def normalize_std_dev(x):
+        return (3 / (1 + math.exp(-1 / 2 * (math.sqrt(x))))) - 1.4
+
     def __init__(self, building, model, params):
         self.model = model
         self.building = building
         self.params = params
         self.properties = {**model.get_properties()}
         self.probabilities = None
+        self.weight = 0 if model is None else model.get_weight()
 
     def applied_metrics(self):
-        return self.model.get_metrics()
+        return {key: val[0] for key, val in self.model.get_metrics().items()}
 
     def get_mean_std_percentage(self):
         metrics = self.applied_metrics()
-        print(metrics)
         normalized, weights = [], []
         for name, param in self.params.items():
             try:
@@ -111,35 +166,55 @@ class AppliedCostModel:
                 raise CostError("Unknown model metric: {}".format(name))
             prc = param.normalize(metric)
             wei = param.weight
-            self.properties["Param " + name] = "{:.2f} - {:.2f} - {:.2f}".format(metric, prc, wei)
+            self.properties["Param " + name] = "Val:{:.2f} - Norm:{:.2f} - Wei:{:.2f}".format(metric, prc, wei)
             normalized.append(prc)
             weights.append(wei)
-        print(normalized)
-        return numpy.average(normalized, weights=weights), (numpy.sqrt(numpy.cov(normalized, aweights=weights))
-                                                            if len(normalized) > 1 else 0.2)
+        # print(normalized)
+        return self.weighted_avg_std(normalized, weights)
 
     def get_probabilities(self):
         if self.probabilities is None:
             avg, std = self.get_mean_std_percentage()
+            std = self.model.get_std_dev() + std
             self.properties['Average interest'] = avg
             self.properties['Std interest'] = std
             # print(mean, std)
             # print(self.model.get_std_dev())
-            std = (2.2 / (1 + math.exp(-1 * (math.sqrt(self.model.get_std_dev() + std))))) - 1
+            std = self.normalize_std_dev(std)
+            self.properties['New std'] = std
             # print(std)
-            ths = norm(avg, std).cdf([0, 1])
-            p1 = ths[0]
-            p2 = ths[1] - ths[0]
-            p3 = 1 - ths[1]
-            self.properties['prob'] = "{:.2f}% - {:.2f}% - {:.2f}%".format(p1 * 100, p2 * 100, p3 * 100)
-            self.probabilities = ths
+            self.probabilities = norm(avg, std).cdf([0, 1])
         return self.probabilities
 
 
 class AppliedVolumeModel(AppliedCostModel):
-    def applied_metrics(self):
-        metrics = self.model.get_metrics()
+    def __init__(self, building, model, params):
+        super().__init__(building, model, params)
         volume = BuildingUtils.get_building_volume(self.building)
         self.properties["Volume"] = volume
         total_volume = self.model.get_buildings_volume()
-        return {key: (volume / total_volume * val) for key, val in metrics.items()}
+        self.factor = volume / total_volume
+        self.weight *= self.factor
+
+    def applied_metrics(self):
+        metrics = self.model.get_metrics()
+        met = {}
+        for key, val in metrics.items():
+            value = val[0]
+            type = val[1]
+            if value is None:
+                met[key] = None
+                continue
+            if type is MetricType.UNIQUE:
+                value = value * self.factor
+            met[key] = value
+        return met
+
+
+class AppliedConstModel(AppliedCostModel):
+    def __init__(self, building, thresholds):
+        super().__init__(building, ConstCostModel({}), {})
+        self.ths = thresholds
+
+    def get_probabilities(self):
+        return self.ths

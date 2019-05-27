@@ -15,7 +15,7 @@ class EdgeEffect():
         edge[1] = l['dst'].gid
         edge['weight'] = 1  # For now do not use costs
         if not (l['src'].gid in self.sG and l['dst'].gid in self.sG):
-            l['effect'] = 0
+            edge['effect'] = 0
         else:
             edge['effect'] = self.edgeffect(self.G, edge)
         return edge

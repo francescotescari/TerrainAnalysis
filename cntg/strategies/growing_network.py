@@ -28,38 +28,37 @@ class Growing_network(CN_Generator):
         return self.restructure_edgeeffect_mt()
 
     def add_links(self, new_node):
+        available_buildings = (list(self.super_nodes.values())+list(self.leaf_nodes.values()))
+        available_buildings.append(self.gw_node.building)
         #returns all the potential links in LoS with the new node
-        print("testing node %r, against %d potential nodes,"
+        print("testing node %r, against %d potential nodes, "
               "already tested against %d nodes" % 
-                (new_node, len(self.infected) - len(self.noloss_cache[new_node]),
+                (new_node.building, len(available_buildings) - len(self.noloss_cache[new_node]),
                 len(self.noloss_cache[new_node])))
         visible_links = [link for link in self.check_connectivity(
-                         list(self.infected.values()), new_node) if link]
+                         available_buildings, new_node.building) if link]
         
         # if there's at least one vaild link add the node to the network
         event = 0
         visible_links.sort(key=lambda x: x['loss'], reverse=True)
         src_ant = False
-        while (visible_links):
+        self.add_node(new_node)
+        while visible_links:
             link = visible_links.pop()
-            self.infected[link['src'].gid] = link['src']
-            self.add_building(link['src'])
             try:
                 src_ant = self.add_link(link)
-            except (LinkUnfeasibilty) as e:
+            except LinkUnfeasibilty as e:
                 # If the link is unfeasible I don't need to try on the followings
                 print(e.msg)
-                self.net.del_node(link['src'])
-                del self.infected[link['src'].gid]
+                self.remove_node(new_node, True)
                 self.noloss_cache[new_node].add(link['dst'])
-                return False
+                break
             except (AntennasExahustion, ChannelExahustion) as e:
                 # If the antennas/channel of dst are finished i can try with another node
-                self.net.del_node(link['src'])
-                del self.infected[link['src'].gid]
                 self.noloss_cache[new_node].add(link['dst'])
         if not src_ant:
             #I finished all the dst node
+            self.remove_node(new_node, True)
             return False
         link_in_viewshed = [link for link in visible_links
                             if src_ant.check_node_vis(link['src_orient'])]

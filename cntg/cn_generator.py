@@ -1,10 +1,11 @@
 import libterrain as lt
 from geoalchemy2.shape import to_shape
+from libterrain.building import Building
 from shapely.geometry.polygon import Polygon
 from shapely.geometry import Point
 from multiprocessing import Pool
 
-from cost_interface import IstatCostInterface, CostInterfaceError
+from cost_interface import IstatCostInterface, CostInterfaceError, ConstCostInterface
 from cost_model import CostError
 from misc import NoGWError
 from node import AntennasExahustion, ChannelExahustion, LinkUnfeasibilty, CostChoice, CostNode
@@ -47,9 +48,12 @@ def poor_mans_color_gamma(bitrate):
 class CN_Generator():
 
     def __init__(self, args, unk_args={}):
+
         self.round = 0
         self.infected = {}
         self.susceptible = set()
+        self.leaf_nodes = {}
+        self.super_nodes = {}
         self.pool = None
         self.net = network.Network()
         with open("gws.yml", "r") as gwf:
@@ -59,6 +63,7 @@ class CN_Generator():
         self.e = self.args.expansion
         self.b = self.args.gateway
         self.P = self.args.processes
+        self.feasible_links = []
         if self.args.bandwidth:
             self.B = tuple(map(float, self.args.bandwidth.split(' ')))
         if self.args.restructure:
@@ -83,7 +88,8 @@ class CN_Generator():
         else:
             restructure = "no_restructure"
         self.filename = "%s-%s-%s-%d-%d-%s-%d-%d-%s-%d" \
-                        % (self.dataset, self.args.strategy, "none" if self.args.cost_interface is None else self.args.cost_interface,
+                        % (self.dataset, self.args.strategy,
+                           "none" if self.args.cost_interface is None else self.args.cost_interface,
                            self.b, self.random_seed, self.n, int(self.e), self.B[0], restructure, time.time())
         # self.t = terrain(self.args.dsn, self.dataset, ple=2.4, processes=self.P)
         self.t = lt.ParallelTerrainInterface(self.args.dsn, lidar_table=self.args.lidar_table, processes=self.P)
@@ -94,12 +100,17 @@ class CN_Generator():
         ubnt.load_devices()
         self.pool = Pool(self.P)
         self.CI = self.choose_cost_interface(self.args)
-        self.node_cache = {}  # caching created nodes for building is necessary as no duplicate is allowed (same building might generate a differend node type)
+        self.show_level = args.show_level
+        self.db_nodes = {}
+        self.waiting_nodes = set()
+        self.gw = None
 
     def _post_init(self):
         gateway = self.get_gateway()
-        self.infected[gateway.gid] = gateway
-        self.net.add_gateway(gateway, attrs={'event': 0})
+        self.gw_node = CostNode.gateway_node(self.args.max_dev * 2, gateway)
+        self.db_nodes[gateway.gid] = self.gw_node
+        node = CostNode.gateway_node(max_ant=self.args.max_dev * 2, building=gateway)
+        self.net.add_gateway(gateway, node=node, attrs={'event': 0})
         self.event_counter += 1
         self.get_susceptibles()
         print("The gateway is " + repr(gateway))
@@ -123,20 +134,34 @@ class CN_Generator():
         return gw
 
     def get_random_node(self):
-        # must cast into list and order because sample on set is unpredictable
-        susceptible_tmp = sorted(list(self.susceptible), key=lambda x: x.gid)
-        if not susceptible_tmp:
+        if not self.susceptible:
             raise NoMoreNodes
-        new_node = random.sample(susceptible_tmp, 1)[0]
-        self.susceptible.remove(new_node)
-        return new_node
+        nodes = []
+        cum_weights = []
+        w = 0
+        for n in self.susceptible:
+            nodes.append(n)
+            w += n.get_weight()
+            cum_weights.append(w)
+        node = random.choices(nodes, cum_weights=cum_weights)[0]
+        self.susceptible.remove(node)
+        if node.cost_choice == CostChoice.NOT_INTERESTED:
+            if self.show_level >= 1:
+                self.add_node(node, False)
+            raise NotInterestedNode
+        return node
 
     def get_susceptibles(self):
-        geoms = [g.shape() for g in self.infected.values()]
+        geoms = [self.gw_node.building.shape()]
+        for g in self.super_nodes.values():
+            geoms.append(g.shape())
+        for g in self.leaf_nodes.values():
+            geoms.append(g.shape())
         self.sb.set_shape(geoms)
         # db_buildings = self.t.get_buildings(self.sb.get_buffer(self.e))
         db_buildings = self.BI.get_buildings(shape=self.sb.get_buffer(self.e), area=self.polygon_area)
-        self.susceptible = set(db_buildings) - set(self.infected.values())
+        self.load_nodes_from_buildings(db_buildings)
+        # self.susceptible = (set(db_buildings) - set(self.super_nodes.values()) - set(self.leaf_nodes.values()))
 
     def get_newnode(self):
         raise NotImplementedError
@@ -145,12 +170,13 @@ class CN_Generator():
         raise NotImplementedError
 
     def stop_condition_maxnodes(self):
-        return len(self.infected) > self.n
+        return (len(self.super_nodes) + len(self.leaf_nodes)) >= self.n
 
     def stop_condition_minbw(self, rounds=1):
         # in case you don't want to test the stop condition every round
-        if len(self.infected) % rounds != 0 or \
-                len(self.infected) < self.B[2]:
+        total_nodes = len(self.super_nodes) + len(self.leaf_nodes)
+        if total_nodes % rounds != 0 or \
+                total_nodes < self.B[2]:
             self.below_bw_nodes = '-'
             return False
         self.below_bw_nodes = 0
@@ -159,13 +185,14 @@ class CN_Generator():
         bw = self.B[0]
         self.net.compute_minimum_bandwidth()
         # if the minimum bw of a node is less than the treshold stop
-        for n in self.infected:
+        nodes = self.super_nodes.keys() | self.leaf_nodes.keys()
+        for n in nodes:
             if n == self.net.gateway:
                 continue
             try:
                 if self.net.graph.node[n]['min_bw'] < bw:
                     self.below_bw_nodes += 1
-                    if self.below_bw_nodes / len(self.infected) > self.B[1]:
+                    if self.below_bw_nodes / len(nodes) > self.B[1]:
                         return True
             except KeyError:
                 # if the nod has no 'min_bw' means that it is not connected
@@ -175,24 +202,23 @@ class CN_Generator():
     def add_links(self, new_node):
         raise NotImplementedError
 
-    def check_connectivity(self, nodes, new_node):
-
-        nodes_to_test = set(nodes) - self.noloss_cache[new_node]
+    def check_connectivity(self, buildings, building):
+        nodes_to_test = set(buildings) - self.noloss_cache[building]
         if not nodes_to_test:
             return []
-        links = self.t.get_link_parallel(src=new_node.coord_height(),
+        links = self.t.get_link_parallel(src=building.coord_height(),
                                          dst_list=list(map(lambda x: x.coord_height(), nodes_to_test)))
         los_nodes = set()
         for l in links:
             if l:
                 l['src'] = l['src']['building']
                 l['dst'] = l['dst']['building']
-                if new_node == l['src']:
+                if building == l['src']:
                     los_nodes.add(l['dst'])
-                elif new_node == l['dst']:
+                elif building == l['dst']:
                     los_nodes.add(l['src'])
-        noloss_nodes = set(nodes) - los_nodes
-        self.noloss_cache[new_node] |= noloss_nodes
+        noloss_nodes = set(buildings) - los_nodes
+        self.noloss_cache[building] |= noloss_nodes
         return links
 
     def restructure(self):
@@ -209,26 +235,30 @@ class CN_Generator():
                 except NoMoreNodes:
                     print("No more nodes to test")
                     break
-                except CostError as e:
-                    print("Failed to calculate cost node: {}".format(e))
-                    continue
                 except NotInterestedNode:
                     print("Node not interested in joining network")
                     continue
-
+                try:
+                    self.waiting_nodes.remove(new_node)
+                except KeyError:
+                    pass
                 # connect it to the network
-                if (self.add_links(new_node)):
+                if self.add_links(new_node):
                     # update area of susceptible nodes
                     self.get_susceptibles()
                     self.restructure()
-                    print("Number of nodes:%d, infected:%d, susceptible:%d, "
+                    print("Number of nodes:%d, super nodes:%d, leaf nodes:%d, susceptible:%d, "
                           "Nodes below bw:%s"
-                          % (self.net.size(), len(self.infected),
+                          % (self.net.size(), len(self.super_nodes), len(self.leaf_nodes),
                              len(self.susceptible), self.below_bw_nodes))
                     if self.args.D and len(self.net.graph) > 2:
                         self.print_metrics()
                         self.plot_map()
                     # input("stop me")
+                else:
+                    self.waiting_nodes.add(new_node)
+                    self.add_node(new_node, False)
+            print("STOP", self.stop_condition_maxnodes(), self.stop_condition_minbw())
         except KeyboardInterrupt:
             pid = os.getpid()
             killtree(pid)
@@ -248,6 +278,11 @@ class CN_Generator():
                 print("A data file was saved in " + dataname)
 
             self.debug_file.close()
+
+        for n in self.waiting_nodes:
+            n.add_failed = True
+            if self.show_level < 2:
+                self.remove_node(n)
         if self.args.plot:
             animationfile = self.save_evolution()
             mapfile = self.plot_map()
@@ -266,7 +301,7 @@ class CN_Generator():
         effect_edges = self.pool.map(ee.restructure_edgeeffect, self.feasible_links)
         effect_edges.sort(key=lambda x: x['effect'])
         # Try to connect the best link (try again till it gets connected)
-        while (effect_edges):
+        while effect_edges:
             selected_edge = effect_edges.pop()
             link = [link for link in self.feasible_links
                     if link['src'].gid == selected_edge[0] and
@@ -282,21 +317,42 @@ class CN_Generator():
                     print("Restructured {} links".format(num_links))
                     return
 
-    def add_building(self, building, node=None):
-        if node is None:
-            node = self.generate_cost_node(building)
-        self.event_counter += 1
-        return self.net.add_node(building, node=node, attrs={'event': self.event_counter})
+    def add_node(self, node, is_linked=True):
+        print("Adding", "linked" if is_linked else "not linked", "node: ", node.gid)
 
-    def add_node(self, node):
-        return self.add_building(node.building, node=node)
+        if is_linked:
+            if node.cost_choice is CostChoice.SUPER_NODE:
+                self.super_nodes[node.building.gid] = node.building
+            elif node.cost_choice is CostChoice.LEAF_NODE:
+                self.leaf_nodes[node.building.gid] = node.building
+        res = self.net.add_node(node.building, node=node, attrs={'event': self.event_counter+1})
+        if res:
+
+            self.event_counter += 1
+            print("EVENT", self.event_counter, "Node added ",node.gid)
+        return res
+
+    def remove_node(self, node, remove_event=False):
+        try:
+            if node.cost_choice is CostChoice.SUPER_NODE:
+                del self.super_nodes[node.building.gid]
+            elif node.cost_choice is CostChoice.LEAF_NODE:
+                del self.leaf_nodes[node.building.gid]
+        except KeyError:
+            pass
+        if remove_event:
+            self.event_counter -= 1
+            print("EVENT", self.event_counter, "Node removed ", node.gid)
+        return self.net.del_node(node.building)
 
     def add_link(self, link, existing=False, reverse=False):
+        res = self.net.add_link_generic(link=link,
+                                        attrs={'event': self.event_counter+1},
+                                        existing=existing,
+                                        reverse=reverse)
         self.event_counter += 1
-        return self.net.add_link_generic(link=link,
-                                         attrs={'event': self.event_counter},
-                                         existing=existing,
-                                         reverse=reverse)
+        print("EVENT", self.event_counter, "Link added ",link)
+        return res
 
     def save_graph(self):
         graphname = self.graphfolder + "graph-" + self.filename + ".graphml"
@@ -323,24 +379,24 @@ class CN_Generator():
         for e in edges_s:
             e_coords.append([list(self.net.graph.nodes()[e[0]]['pos']),
                              list(self.net.graph.nodes()[e[1]]['pos'])])
-            e_times.append(1530744263666 + e[2]['event'] * 36000000)
+            e_times.append(1530744263666 + e[2]['event'] * 86400000)
             # FIXME starting time is just a random moment
-            features_edges = {
-                'type': 'Feature',
-                'geometry': {
-                    'type': 'MultiLineString',
-                    'coordinates': e_coords,
-                },
-                'properties': {
-                    'times': e_times,
-                }
+        features_edges = {
+            'type': 'Feature',
+            'geometry': {
+                'type': 'MultiLineString',
+                'coordinates': e_coords,
+            },
+            'properties': {
+                'times': e_times,
             }
+        }
         n_coords = []
         n_times = []
 
         for n in nodes_s:
             n_coords.append([n[1]['pos'], n[1]['pos']])
-            n_times.append(1530744263666 + n[1]['event'] * 36000000)
+            n_times.append(1530744263666 + n[1]['event'] * 86400000)
         # the only way I found to plot the nodes is pretend they are
         # one-point lines
         features_nodes = {
@@ -353,8 +409,9 @@ class CN_Generator():
                 'times': n_times,
                 'style': {
                     'color': 'red',
-                    'width': 20,
+                    'width': 20
                 }
+
             }
         }
 
@@ -375,13 +432,21 @@ class CN_Generator():
         max_event = max(nx.get_node_attributes(self.net.graph, 'event').values())
         for node in self.net.graph.nodes(data=True):
             (lat, lon) = node[1]['pos']
-            props = node[1]['node'].props_str() if isinstance(node[1]['node'], CostNode) else ""
             try:
-                label = "Node: %d<br>Antennas:<br> %s<br>%smin_bw: %s" % \
-                        (node[0], node[1]['node'], props, node[1]['min_bw'])
+                min_bw = "Min_bw:" + str(node[1]['min_bw'])
             except KeyError:
-                label = "Node: %d<br>Antennas:<br> %s<br>%s" % \
-                        (node[0], node[1]['node'], props)
+                min_bw = ""
+            n = node[1]['node']
+            if isinstance(n, CostNode):
+                props = n.props_str()
+                color = n.get_color()
+                bottom_label = n.prob_bars()
+            else:
+                props = ""
+                color = "black"
+                bottom_label = ""
+            label = "Node: %d<br>Antennas:<br>%s<br>%s%s<br>%s" % \
+                    (node[0], node[1]['node'], props, min_bw, bottom_label)
             opacity = node[1]['event'] / max_event
             if node[0] == self.net.gateway:
                 folium.Marker([lon, lat],
@@ -392,7 +457,8 @@ class CN_Generator():
                 folium.CircleMarker([lon, lat],
                                     fill=True,
                                     popup=label,
-                                    fill_opacity=opacity).add_to(self.map)
+                                    fill_opacity=opacity,
+                                    color=color).add_to(self.map)
         for frm, to, p in self.net.graph.edges(data=True):
             lat_f, lon_f = nx.get_node_attributes(self.net.graph, 'pos')[frm]
             lat_t, lon_t = nx.get_node_attributes(self.net.graph, 'pos')[to]
@@ -407,7 +473,11 @@ class CN_Generator():
     def plot_map(self):
         self.graph_to_leaflet()
         mapname = self.mapfolder + "map-" + self.filename + ".html"
-        self.map.save(mapname)
+        html = self.map.get_root().render()
+        f = open(mapname, "w")
+        f.write(html.replace("</head>",
+                             "<style>.pbar{width:200px;height:20px;margin:0!important;padding:0!important;border:0!important;position:relative;overflow:visible;white-space:nowrap}.pptr{position:absolute;top:-16px;color:red;display:block;font-size:24px}.pbar div{display:inline-block;width:20%;height:100%;margin:0!important;padding:0!important;border:0!important}.ni{background-color:grey}.ln{background-color:green}.sn{background-color:#00f}</style></head>"))
+        f.close()
         return mapname
 
     def save_evolution(self):
@@ -431,26 +501,35 @@ class CN_Generator():
         """Create a cost interface object based on args cost model"""
         name = args.cost_interface
         dsn = args.dsn
+        if name is None:
+            raise CostInterfaceError("Missing --cost_interface [cost interface name] option")
         if name == 'istat':
             return IstatCostInterface(dsn, self.BI)
-        raise CostInterfaceError(
-            "Missing --cost_interface [cost interface name] option" if name is None else "Invalid cost interface name: " + name)
+        elif name.startswith("const_"):
+            type = name[6:]
+            if type == "super":
+                return ConstCostInterface(CostChoice.SUPER_NODE)
+            elif type == "leaf":
+                return ConstCostInterface(CostChoice.LEAF_NODE)
+        raise CostInterfaceError("Invalid cost interface name: " + name)
 
-    def generate_cost_node(self, building):
-        if building.gid not in self.node_cache.keys():
-            applied_model = self.CI.get(building)
-            thresholds = applied_model.get_probabilities()
-            rand = random.uniform(0, 1)
-            print("RAND=", rand, thresholds)
-            if rand < thresholds[0]:
-                choice, max_devs = CostChoice.NOT_INTERESTED, 0
-            elif rand < thresholds[1]:
-                choice, max_devs = CostChoice.LEAF_NODE, 1
-            else:
-                choice, max_devs = CostChoice.SUPER_NODE, self.args.max_dev
-            print(choice, max_devs)
-            self.node_cache[building.gid] = CostNode(choice, max_devs, building, applied_model.properties)
-        return self.node_cache[building.gid]
+    def load_nodes_from_buildings(self, buildings):
+        susceptibles = set(buildings)-set(self.super_nodes.values())-set(self.leaf_nodes.values())
+        for building in susceptibles:
+            if building.gid == self.gw_node.gid:
+                continue
+            node = self.db_nodes.get(building.gid, None)
+            if node is None:
+                try:
+                    node = CostNode(self.args.max_dev, self.CI.get_cached(building))
+                except CostError as e:
+                    print("Ignoring building %r cause error: %s" % (building, e))
+                    continue
+                self.db_nodes[building.gid] = node
+            self.susceptible.add(node)
+
+    def node_for(self, building):
+        return self.db_nodes[building.gid] if isinstance(building, Building) else self.db_nodes[building]
 
 
 def killtree(pid, including_parent=False):

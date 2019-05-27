@@ -1,8 +1,10 @@
+from enum import Enum
+
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer
 from geoalchemy2 import Geometry
 from geoalchemy2.shape import to_shape
-from numpy import std
+from numpy import std, average
 
 from misc import BuildingUtils
 
@@ -14,11 +16,19 @@ class CostError(Exception):
         super().__init__(msg)
 
 
+class MetricType(Enum):
+    SHARED = 1
+    UNIQUE = 2
+
+
 class CostModel(Base):
     """Cost model object indicates the interest for a building/area/whatever
     Core object to implement and use in cost interface
     """
     __abstract__ = True
+
+    def get_weight(self):
+        raise NotImplementedError
 
     def get_metrics(self):
         raise NotImplementedError
@@ -27,20 +37,19 @@ class CostModel(Base):
         return {}
 
     def get_std_dev(self):
-        return 0.2
+        return 0.1
 
 
-
-class TestCostModel(CostModel):
+class ConstCostModel(CostModel):
     __abstract__ = True
-
-    def __init__(self, gid):
-        self.gid = gid
+    def __init__(self, metrics):
+        self.metrics = metrics
 
     def get_metrics(self):
-        return {
-            'gid_modulus': self.gid % 3
-        }
+        return self.metrics
+
+    def get_weight(self):
+        return 1
 
 
 class IstatCostModel(CostModel):
@@ -77,12 +86,13 @@ class IstatCostModel(CostModel):
 
     geom = Column(Geometry('POLYGON'))
 
-
-
     def __init__(self):
         self.buildings = None
         self.buildings_volume = None
         self.buildings_std = None
+
+    def get_weight(self):
+        return self.pp_number
 
     def load_buildings(self, building_interface):
         self.buildings = building_interface.get_buildings(self.shape())
@@ -109,9 +119,17 @@ class IstatCostModel(CostModel):
 
     def get_metrics(self):
         return {
-            'people': self.pp_number,
-            'employed': self.pp_employed
+            'people': (self.pp_number, MetricType.UNIQUE),
+            'employed': (self.pp_employed, MetricType.UNIQUE),
+            'avg_age': (self.average_age(), MetricType.SHARED)
         }
+
+    def average_age(self):
+        age = 2.5 * self.pp_year0_5 + 7.5 * self.pp_year5_10 + 12.5 * self.pp_year10_15 + 17.5 * self.pp_year15_20 + \
+              22.5 * self.pp_year20_25 + 27.5 * self.pp_year25_30 + 32.5 * self.pp_year30_35 + 37.5 * self.pp_year35_40 + \
+              42.5 * self.pp_year40_45 + 47.5 * self.pp_year45_50 + 52.5 * self.pp_year50_55 + 57.5 * self.pp_year55_60 + \
+              62.5 * self.pp_year60_65 + 67.5 * self.pp_year65_70 + 72.5 * self.pp_year70_75 + 80 * self.pp_year75_200
+        return age / self.pp_number
 
     def get_properties(self):
         return {
@@ -120,5 +138,6 @@ class IstatCostModel(CostModel):
 
     def get_std_dev(self):
         if getattr(self, "buildings_std", None) is None:
-            self.buildings_std = std([BuildingUtils.get_building_volume(b) for b in self.require_buildings()])*1000000
+            data = [BuildingUtils.get_building_volume(b) for b in self.require_buildings()]
+            self.buildings_std = std(data) / average(data)
         return self.buildings_std

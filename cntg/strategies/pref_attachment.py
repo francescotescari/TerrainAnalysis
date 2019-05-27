@@ -28,32 +28,34 @@ class Pref_attachment(CN_Generator):
         return self.restructure_edgeeffect_mt()
 
     def add_links(self, new_node):
+        available_buildings = (list(self.super_nodes.values()) + list(self.leaf_nodes.values()))
+        available_buildings.append(self.gw_node.building)
         #returns all the potential links in LoS with the new node
         print("testing node %r, against %d potential nodes,"
               "already tested against %d nodes" %
-                (new_node, len(self.infected) - len(self.noloss_cache[new_node]),
+                (new_node.building, len(available_buildings) - len(self.noloss_cache[new_node]),
                 len(self.noloss_cache[new_node])))
         visible_links = [link for link in self.check_connectivity(
-                         list(self.infected.values()), new_node) if link]
+                         available_buildings, new_node.building) if link]
         if not visible_links:
             return False
         # Value of the bw of the net before the update
         min_bw = self.net.compute_minimum_bandwidth()
         # Let's create a dict that associate each link to a new net object.
-        metrics = self.pool.map(self.net.calc_metric, visible_links)
+        metrics = self.pool.starmap(self.net.calc_metric,
+                                    [(link, self.node_for(link['src'])) for link in visible_links])
         # Filter out unwanted links
         clean_metrics = []
         for m in metrics:
             if m['min_bw'] == 0:
                 print("First Node")
                 # This is the first node we add so we have to ignore the metric and add it
-                self.infected[m['link']['src'].gid] = m['link']['src']
-                self.add_building(m['link']['src'])
+                self.add_node(new_node)
                 src_ant = self.add_link(m['link'])
                 return True
             if not m['min_bw']:
                 # If is none there was an exception (link unaddable) thus we add it to cache
-                self.noloss_cache[new_node].add(m['link']['dst'])
+                self.noloss_cache[new_node.building].add(m['link']['dst'])
             else:
                 clean_metrics.append(m)
         # We want the link that maximizes the difference of the worse case
@@ -66,8 +68,7 @@ class Pref_attachment(CN_Generator):
                                                 m['link']['loss']),
                                  reverse=True)
         link = ordered_metrics.pop()['link']
-        self.infected[link['src'].gid] = link['src']
-        self.add_building(link['src'])
+        self.add_node(new_node)
         # Don't need to try since the unvalid link have been excluded by calc_metric()
         src_ant = self.add_link(link)
         # Add the remaining links if needed

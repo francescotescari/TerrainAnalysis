@@ -37,20 +37,25 @@ class Network():
             if self.gateway in sg:
                 return sg
 
-    def add_gateway(self, building, attrs={}):
+    def add_gateway(self, building, node=None, attrs={}):
+        if node is None:
+            node = Node(self.max_dev * 2)
         self.graph.add_node(building.gid,
                             pos=building.xy(),
-                            node=Node(self.max_dev * 2),
+                            node=node,
                             **attrs)
         self.gateway = building.gid
 
     def add_node(self, building, node=None, attrs={}):
+        if self.graph.has_node(building.gid):
+            return False
         if node is None:
             node = Node(self.max_dev)
         self.graph.add_node(building.gid,
                             pos=building.xy(),
                             node=node,
                             **attrs)
+        return True
 
     def del_node(self, building):
         self.graph.remove_node(building.gid)

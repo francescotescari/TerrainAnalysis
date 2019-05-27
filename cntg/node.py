@@ -4,6 +4,7 @@ import wifi
 import ubiquiti as ubnt
 import random
 from antenna import Antenna
+
 node_fixed_cost = 200
 
 
@@ -21,16 +22,17 @@ class ChannelExahustion(Exception):
     msg = "No more channels"
     pass
 
+
 class CostChoice(Enum):
-    NOT_INTERESTED = 1
-    LEAF_NODE = 2
-    SUPER_NODE = 3
+    NOT_INTERESTED = (1, "grey")
+    LEAF_NODE = (2, "green")
+    SUPER_NODE = (3, "blue")
 
     def __str__(self):
         return self.name
 
-
-
+    def color(self):
+        return self.value[1]
 
 
 class Node:
@@ -46,7 +48,7 @@ class Node:
         return cost
 
     def __repr__(self):
-        return(str(self))
+        return (str(self))
 
     def __str__(self):
         string = ""
@@ -74,7 +76,7 @@ class Node:
             self.check_channel(channel)
         if not src_device:
             raise LinkUnfeasibilty
-        if(len(self.antennas) >= self.max_ant):
+        if (len(self.antennas) >= self.max_ant):
             raise AntennasExahustion
         ant = Antenna(src_device, orientation, channel)
         self.antennas.append(ant)
@@ -108,18 +110,69 @@ class Node:
 
 class CostNode(Node):
     """Extension of node object with cost choice property"""
+    BAR_HTML = '<div class="pbar"><div class="ni" style="width:{:.0f}px"></div><div class="ln" style="width:{:.0f}px"></div><div class="sn" style="width:{:.0f}px"></div></div>'
 
-    def __init__(self, choice, max_ant, building, properties=None):
-        self.cost_choice = choice
-        self.properties = {} if properties is None else properties
-        self.building = building
+    @staticmethod
+    def gateway_node(max_ant, building):
+        node = CostNode(max_ant, None)
+        node.building = building
+        node.properties['Is GW'] = True
+        node.gid = building.gid
+        return node
+
+    def __init__(self, max_ant, applied_model):
+        if applied_model is not None:
+            ths = applied_model.get_probabilities()
+            p1 = ths[0]
+            p2 = ths[1] - ths[0]
+            p3 = 1 - ths[1]
+            self.probs = (p1, p2, p3)
+            self.properties = {} if applied_model.properties is None else applied_model.properties
+            self.properties["Probabilities"] = "{:.2f}% - {:.2f}% - {:.2f}%".format(p1 * 100, p2 * 100, p3 * 100)
+            self.cost_choice = random.choices((CostChoice.NOT_INTERESTED, CostChoice.LEAF_NODE, CostChoice.SUPER_NODE),
+                                              self.probs)[0]
+            if self.cost_choice is CostChoice.NOT_INTERESTED:
+                max_ant = 0
+            elif self.cost_choice is CostChoice.LEAF_NODE:
+                max_ant = 1
+
+            self.building = applied_model.building
+            self.gid = self.building.gid
+        else:
+            self.properties = {}
+            self.building = None
+            self.cost_choice = None
+            self.gid = None
+        self.add_failed = False
+        self.model = applied_model
         super().__init__(max_ant)
+
+    def get_weight(self):
+        return 0 if self.model is None else self.model.weight
 
     def props_str(self):
         res = "Node type: " + str(self.cost_choice) + "<br>"
         for key, value in self.properties.items():
             try:
+                if key == 'Fail cause' and not self.add_failed:
+                    continue
                 res += str(key) + ": " + str(value) + "<br>"
             except Exception:
                 pass
-        return res.replace("'",'"')
+        return res.replace("'", '"')
+
+    def get_color(self):
+        if self.add_failed or self.cost_choice is None:
+            return "yellow"
+        return self.cost_choice.color()
+
+    def set_fail(self, cause):
+        print("Failed to link node {}: {}".format(self.building.gid, cause))
+        self.properties['Fail cause'] = cause
+
+    def prob_bars(self):
+        try:
+            p1, p2, p3 = self.probs
+            return self.BAR_HTML.format(p1 * 200, p2 * 200, p3 * 200)
+        except Exception:
+            return ''
