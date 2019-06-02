@@ -1,7 +1,7 @@
 import numpy
 
 from cost_model import CostError
-from node import CostChoice, CostNode
+from node import CostChoice
 from strategies.cost_strategy import CostStrategy
 
 
@@ -9,8 +9,8 @@ class CostStrategyAggressive(CostStrategy):
 
     def add_links(self, new_node):
         res = super().add_links(new_node)
-        if res:
-            self.add_linkable_nodes([new_node.building])
+        if res and new_node.cost_choice is CostChoice.SUPER_NODE:
+            self.add_linkable_nodes([new_node])
         return res
 
     def add_linkable_nodes(self, linkable):
@@ -30,31 +30,33 @@ class CostStrategyAggressive(CostStrategy):
             sorted_wait_nodes = numpy.random.choice(nodes, len(nodes), False, [w / tw for w in wei])
             added_super = []
             for node in sorted_wait_nodes:
-                visible_links = [link for link in self.check_connectivity(linkable, node.building) if link]
+                visible_links = [link for link in self.check_connectivity(linkable, node) if link]
                 if not visible_links:
                     continue
                 is_leaf = node.cost_choice is CostChoice.LEAF_NODE
                 res = self.add_links_leaf(node, visible_links) if is_leaf else self.add_links_super(node, visible_links)
                 if res:
-                    print("Successfully connected waiting node: ", node.building)
-                    if self.stop_condition_maxnodes():
-                        return True
+                    print("Successfully connected waiting node: ", node)
                     self.waiting_nodes.remove(node)
+                    self.restructure()
+                    if self.stop_condition():
+                        return True
                     if not is_leaf:
-                        linkable.append(node.building)
-                        added_super.append(node.building)
+                        linkable.append(node)
+                        added_super.append(node)
+                else:
+                    self.add_node(node, False)
             linkable = added_super
 
     def load_nodes_from_buildings(self, buildings):
-        for building in buildings:
-            if building.gid == self.gw_node.gid:
+        susceptibles = set(buildings)-self.ignored
+        for building in susceptibles:
+            if building.gid == self.gw_node.building.gid:
                 continue
             if building.gid in self.db_nodes:
                 continue
-            try:
-                node = CostNode(self.args.max_dev, self.CI.get_cached(building))
-            except CostError as e:
-                print("Ignoring building %r cause error: %s" % (building, e))
+            nodes = self.gen_nodes_from_building(building)
+            if nodes is None:
                 continue
-            self.db_nodes[building.gid] = node
-            self.susceptible.add(node)
+            self.db_nodes[building.gid] = nodes
+            self.susceptible.update(nodes)

@@ -11,7 +11,7 @@ import configargparse
 STRATEGIES = {
     'growing_network': Growing_network,
     'pref_attachment': Pref_attachment,
-    'cost': CostStrategy,
+    'cost_sharing': CostStrategy,
     'cost_aggressive': CostStrategyAggressive
 }
 
@@ -62,10 +62,12 @@ def parse_args():
     parser.add_argument("--lidar_table", help="pointcloud table containing lidar/srtm data", required=True)
     parser.add_argument("--base_folder", help="Output base folder for the data", required=True)
     parser.add_argument("--cost_interface",
-                        help="Cost interface used to calculate probabilities of node type in cost sharing mode")
+                        help="Cost interface used to calculate probabilities of node type in cost sharing mode", required=True)
     parser.add_argument("--show_level",
                         help="Show nodes type level. 0 = linked to newtork, 1 = also not interested, 2 also failed",
                         default=1, type=int)
+    parser.add_argument("--snminbw", help="Minbw accepted by a supernode", default=5, type=float)
+    parser.add_argument("--snminbw_policy", help="Policy on minbw of super nodes in cost sharing strategies", default=None, choices={'strict','tolerant'})
     parser.set_defaults(plot=False)
     args, unknown = parser.parse_known_args()
     return args, unknown

@@ -28,22 +28,21 @@ class Pref_attachment(CN_Generator):
         return self.restructure_edgeeffect_mt()
 
     def add_links(self, new_node):
-        available_buildings = (list(self.super_nodes.values()) + list(self.leaf_nodes.values()))
-        available_buildings.append(self.gw_node.building)
+        available_nodes = list(self.super_nodes | self.leaf_nodes)
+        available_nodes.append(self.gw_node)
         #returns all the potential links in LoS with the new node
         print("testing node %r, against %d potential nodes,"
               "already tested against %d nodes" %
-                (new_node.building, len(available_buildings) - len(self.noloss_cache[new_node]),
+                (new_node.building, len(available_nodes) - len(self.noloss_cache[new_node]),
                 len(self.noloss_cache[new_node])))
         visible_links = [link for link in self.check_connectivity(
-                         available_buildings, new_node.building) if link]
+                         available_nodes, new_node) if link]
         if not visible_links:
             return False
         # Value of the bw of the net before the update
         min_bw = self.net.compute_minimum_bandwidth()
         # Let's create a dict that associate each link to a new net object.
-        metrics = self.pool.starmap(self.net.calc_metric,
-                                    [(link, self.node_for(link['src'])) for link in visible_links])
+        metrics = self.pool.map(self.net.calc_metric,visible_links)
         # Filter out unwanted links
         clean_metrics = []
         for m in metrics:

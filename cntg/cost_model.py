@@ -5,6 +5,7 @@ from sqlalchemy import Column, Integer
 from geoalchemy2 import Geometry
 from geoalchemy2.shape import to_shape
 from numpy import std, average
+from libterrain.building import DataUnavailable
 
 from misc import BuildingUtils
 
@@ -26,12 +27,21 @@ class CostModel(Base):
     Core object to implement and use in cost interface
     """
     __abstract__ = True
+    cache = True
+
+    def __init__(self):
+        self.metrics_cached = None
 
     def get_weight(self):
         raise NotImplementedError
 
     def get_metrics(self):
         raise NotImplementedError
+
+    def get_metrics_cached(self):
+        if getattr(self, 'metrics_cached', None) is None or not self.cache:
+            self.metrics_cached = self.get_metrics()
+        return self.metrics_cached
 
     def get_properties(self):
         return {}
@@ -42,7 +52,9 @@ class CostModel(Base):
 
 class ConstCostModel(CostModel):
     __abstract__ = True
+
     def __init__(self, metrics):
+        super().__init__()
         self.metrics = metrics
 
     def get_metrics(self):
@@ -87,6 +99,7 @@ class IstatCostModel(CostModel):
     geom = Column(Geometry('POLYGON'))
 
     def __init__(self):
+        super().__init__()
         self.buildings = None
         self.buildings_volume = None
         self.buildings_std = None
@@ -111,11 +124,16 @@ class IstatCostModel(CostModel):
             buildings = self.require_buildings()
             self.buildings_volume = 0
             for building in buildings:
-                self.buildings_volume += BuildingUtils.get_building_volume(building)
+                try:
+                    self.buildings_volume += BuildingUtils.get_building_volume(building)
+                except DataUnavailable as e:
+                    print("Ignoring building %r during total volume sum because invalid data: %s" % (building, e))
         return self.buildings_volume
 
     def get_buildings_number(self):
         return len(self.require_buildings())
+
+    metrics = {'avg_age': get_weight}
 
     def get_metrics(self):
         return {
@@ -137,7 +155,6 @@ class IstatCostModel(CostModel):
         }
 
     def get_std_dev(self):
-        if getattr(self, "buildings_std", None) is None:
-            data = [BuildingUtils.get_building_volume(b) for b in self.require_buildings()]
-            self.buildings_std = std(data) / average(data)
-        return self.buildings_std
+        data = [BuildingUtils.get_building_volume(b) for b in self.require_buildings()]
+        return std(data) / average(data)
+

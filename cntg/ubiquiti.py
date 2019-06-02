@@ -238,14 +238,16 @@ def get_maximum_rate(pathloss, src, dst):
     return (dw_rate, up_rate)
 
 
-def get_fastest_link_hardware(pathloss, target=None):
+def get_fastest_link_hardware(pathloss, target=None, available_devices=None):
     """ return the device that has the best MCS on a given pathloss. If there
     is a tie, return the cheapest one """
     tmp = []
+    if not available_devices:
+        available_devices = devices
     if target:
         # FIXME restructure this if
         # Find best source wrt target and Estimate the rate and mod for a given link
-        for d in devices:
+        for d in available_devices:
             possible_mod = get_feasible_modulation_list(d, target, pathloss)
             if possible_mod:
                 tmp.append((d, possible_mod))

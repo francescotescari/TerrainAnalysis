@@ -1,7 +1,7 @@
 import networkx as nx
 from antenna import Antenna
 from cost_model import CostError
-from node import Node
+from node import Node, HarmfulLink
 import ubiquiti as ubnt
 import numpy
 import wifi
@@ -37,72 +37,129 @@ class Network():
             if self.gateway in sg:
                 return sg
 
-    def add_gateway(self, building, node=None, attrs={}):
-        if node is None:
-            node = Node(self.max_dev * 2)
-        self.graph.add_node(building.gid,
-                            pos=building.xy(),
+    def add_gateway(self, node, attrs={}):
+        self.graph.add_node(node.gid,
+                            pos=node.xy(),
                             node=node,
                             **attrs)
-        self.gateway = building.gid
+        self.gateway = node.gid
 
-    def add_node(self, building, node=None, attrs={}):
-        if self.graph.has_node(building.gid):
+    def add_node(self, node, attrs={}):
+        if self.graph.has_node(node.gid):
+            self.graph.node[node.gid]['node'] = node
             return False
-        if node is None:
-            node = Node(self.max_dev)
-        self.graph.add_node(building.gid,
-                            pos=building.xy(),
+        self.graph.add_node(node.gid,
+                            pos=node.xy(),
                             node=node,
                             **attrs)
         return True
 
-    def del_node(self, building):
-        self.graph.remove_node(building.gid)
+    def del_node(self, node):
+        self.graph.remove_node(node.gid)
 
-    def update_interfering_links(self, link, dst_antenna=None, src_antenna=None):
-        interfering_links = []
-        degree = 0
+    def get_interfering_links(self, link, dst_antenna=None, src_antenna=None):
+        dst_int = []
+        src_int = []
         # calculate the number of link wrt the 2 antennas
         if dst_antenna:
             for l in self.graph.out_edges(link['dst'].gid, data=True):
                 if l[2]['src_ant'] == dst_antenna:
-                    interfering_links.append(l)
-                    degree += 1
+                    dst_int.append((l[0], l[1]))
             for l in self.graph.in_edges(link['dst'].gid, data=True):
                 if l[2]['dst_ant'] == dst_antenna:
-                    interfering_links.append(l)
-                    degree += 1
+                    dst_int.append((l[0], l[1]))
         if src_antenna:
             for l in self.graph.out_edges(link['src'].gid, data=True):
                 if l[2]['dst_ant'] == src_antenna:
-                    interfering_links.append(l)
-                    degree += 1
+                    src_int.append((l[0], l[1]))
             for l in self.graph.in_edges(link['src'].gid, data=True):
                 if l[2]['src_ant'] == src_antenna:
-                    interfering_links.append(l)
-                    degree += 1
-        # set it to the attribute
+                    src_int.append((l[0], l[1]))
+        return src_int, dst_int
+
+    def del_link(self, link):
+        sid = link['src'].gid
+        did = link['dst'].gid
+        edge = self.graph.get_edge_data(sid, did)
+        src_node = self.graph.node[sid]['node']
+        src_ant = edge['src_ant']
+        dst_node = self.graph.node[did]['node']
+        dst_ant = edge['dst_ant']
+        self.graph.remove_edge(sid, did)
+        self.graph.remove_edge(did, sid)
+
+        src_int, dst_int = self.get_interfering_links(link, dst_ant, src_ant)
+        if not src_int and src_ant:
+            src_node.free_channels.append(src_ant.channel)
+            src_node.antennas.remove(src_ant)
+        if not dst_int and dst_ant:
+            dst_node.free_channels.append(dst_ant.channel)
+            dst_node.antennas.remove(dst_ant)
+
+        for l in edge['interfering_links']:
+            try:
+                data = self.graph.get_edge_data(l[0], l[1])
+                i_links = data['interfering_links']
+                try:
+                    i_links.remove((sid, did))
+                except KeyError:
+                    pass
+                try:
+                    i_links.remove((did, sid))
+                except KeyError:
+                    pass
+                data['link_per_antenna'] = len(i_links)
+            except TypeError:
+                pass
+
+    def update_interfering_links(self, link, dst_antenna=None, src_antenna=None):
+        src_int, dst_int = self.get_interfering_links(link, dst_antenna, src_antenna)
         if src_antenna:
             for l in self.graph.out_edges(link['src'].gid, data=True):
                 if l[2]['dst_ant'] == src_antenna:
-                    l[2]['interfering_links'] = interfering_links
-                    l[2]['link_per_antenna'] = degree
+                    if l[2]['src_ant'] == dst_antenna:
+                        l[2]['interfering_links'] = set(src_int + dst_int)
+                    else:
+                        try:
+                            l[2]['interfering_links'].update(src_int)
+                        except Exception:
+                            l[2]['interfering_links'] = set(src_int)
+                    l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
             for l in self.graph.in_edges(link['src'].gid, data=True):
                 if l[2]['src_ant'] == src_antenna:
-                    l[2]['interfering_links'] = interfering_links
-                    l[2]['link_per_antenna'] = degree
+                    if l[2]['dst_ant'] == dst_antenna:
+                        l[2]['interfering_links'] = set(src_int + dst_int)
+                    else:
+                        try:
+                            l[2]['interfering_links'].update(src_int)
+                        except Exception:
+                            l[2]['interfering_links'] = set(src_int)
+                    l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
         if dst_antenna:
             for l in self.graph.out_edges(link['dst'].gid, data=True):
                 if l[2]['src_ant'] == dst_antenna:
-                    l[2]['interfering_links'] = interfering_links
-                    l[2]['link_per_antenna'] = degree
+                    if l[2]['dst_ant'] == src_antenna:
+                        l[2]['interfering_links'] = set(src_int + dst_int)
+                    else:
+                        try:
+                            l[2]['interfering_links'].update(dst_int)
+                        except Exception:
+                            l[2]['interfering_links'] = set(dst_int)
+                    l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
             for l in self.graph.in_edges(link['dst'].gid, data=True):
                 if l[2]['dst_ant'] == dst_antenna:
-                    l[2]['interfering_links'] = interfering_links
-                    l[2]['link_per_antenna'] = degree
+                    if l[2]['src_ant'] == dst_antenna:
+                        l[2]['interfering_links'] = set(src_int + dst_int)
+                    else:
+                        try:
+                            l[2]['interfering_links'].update(dst_int)
+                        except Exception:
+                            l[2]['interfering_links'] = set(dst_int)
+                    l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
 
     def add_link_generic(self, link, attrs={}, reverse=False, existing=False):
+        link['src'] = self.graph.node[link['src'].gid]['node']
+        link['dst'] = self.graph.node[link['dst'].gid]['node']
         result = None
         if reverse:
             reverse_link = {}
@@ -118,19 +175,21 @@ class Network():
         else:
             result = self._add_link(link, attrs)
         return result
+
     '''
     This function is used to connect a new node (src) to an existing node of the network
     NB: source must be a new node without antennas
     '''
+
     def _add_link(self, link, attrs={}):
         # Search if there's an antenna usable at the destination
-        dst_antennas = self.graph.nodes[link['dst'].gid]['node']
-        dst_ant = dst_antennas.get_best_dst_antenna(link)
-        src_antennas = self.graph.nodes[link['src'].gid]['node']
-        src_ant = src_antennas.add_antenna(loss=link['loss'],
-                                           orientation=link['src_orient'],
-                                           device=dst_ant.ubnt_device,
-                                           channel=dst_ant.channel)
+        dst_node = link['dst']
+        dst_ant = dst_node.get_best_dst_antenna(link)
+        src_node = link['src']
+        src_ant = src_node.add_antenna(loss=link['loss'],
+                                       orientation=link['src_orient'],
+                                       device=dst_ant.ubnt_device,
+                                       channel=dst_ant.channel)
         # Now there are 2 devices, calculate the rates
         src_rate, dst_rate = ubnt.get_maximum_rate(link['loss'],
                                                    src_ant.ubnt_device[0],
@@ -160,17 +219,18 @@ class Network():
 
     def _add_link_existing(self, link, attrs={}):
         # Pick the best antenna at dst
-        dst_antennas = self.graph.nodes[link['dst'].gid]['node']
-        src_antennas = self.graph.nodes[link['src'].gid]['node']
+        dst_node = link['dst']
+        src_node = link['src']
         # Check if there's a free channel on both (intersection)
-        free_channels = set(dst_antennas.free_channels) & set(src_antennas.free_channels)
+        free_channels = set(dst_node.free_channels) & set(src_node.free_channels)
         try:
             channel = random.sample(free_channels, 1)[0]
         except ValueError:
             raise ChannelExahustion
         # Since we want to add capacity to the network we always add new antennas
-        dst_ant = dst_antennas.add_antenna(loss=link['loss'], orientation=link['dst_orient'], channel=channel)
-        src_ant = src_antennas.add_antenna(loss=link['loss'], orientation=link['dst_orient'], channel=channel, device=dst_ant.ubnt_device)
+        dst_ant = dst_node.add_antenna(loss=link['loss'], orientation=link['dst_orient'], channel=channel)
+        src_ant = src_node.add_antenna(loss=link['loss'], orientation=link['dst_orient'], channel=channel,
+                                       device=dst_ant.ubnt_device)
 
         src_rate, dst_rate = ubnt.get_maximum_rate(link['loss'],
                                                    src_ant.ubnt_device[0],
@@ -217,24 +277,27 @@ class Network():
                 pass
         nx.write_graphml(self.graph, filename)
 
-    def calc_metric(self, link, node=None):
-        self.add_node(link['src'], node)
+    def calc_metric(self, link, good_condition_check=None):
+        self.add_node(link['src'])
         try:
             src_ant = self.add_link_generic(link)
-        except (LinkUnfeasibilty, AntennasExahustion, ChannelExahustion) as e:
+            if good_condition_check:
+                if not good_condition_check():
+                    raise HarmfulLink
+        except (LinkUnfeasibilty, AntennasExahustion, ChannelExahustion, HarmfulLink) as e:
             worse = (link['src'].gid, None)
         else:
             # i must remove the new node from this list to avoid problems when i make difference and order them
             min_bw = [m for m in list(self.compute_minimum_bandwidth().items())
-                            if m[0] != link['src'].gid]
+                      if m[0] != link['src'].gid]
             if min_bw:
                 worse = min(min_bw, key=lambda x: x[1])
             else:
-                #This happens only at the begining when the new node is the 2nd node
+                # This happens only at the begining when the new node is the 2nd node
                 worse = (link['src'].gid, 0)
-        return({'link': link, 'node': worse[0], 'min_bw': worse[1]})
+        return ({'link': link, 'node': worse[0], 'min_bw': worse[1]})
 
-# --- METRICS ---
+    # --- METRICS ---
     def compute_minimum_bandwidth(self):
         min_bandwidth = {}
         paths = defaultdict(list)
@@ -248,9 +311,9 @@ class Network():
                                         weight=compute_link_quality)
             except nx.exception.NetworkXNoPath:
                 continue
-            for i in range(len(path)-1):
-                paths_per_edge[(path[i], path[i+1])] += 1
-                paths[d].append((path[i], path[i+1]))
+            for i in range(len(path) - 1):
+                paths_per_edge[(path[i], path[i + 1])] += 1
+                paths[d].append((path[i], path[i + 1]))
         for d in paths:
             min_bw = float('inf')
             for e in paths[d]:
@@ -261,7 +324,6 @@ class Network():
                     intf_links = g_e['interfering_links']
                 except KeyError:
                     intf_links = []
-
                 intf_number = 1
                 # the achievable rate on a link e is given by the maximum
                 # bit rate divided by the number of interfering links that
@@ -306,8 +368,8 @@ class Network():
         if connectivity > 1:
             return connectivity
         else:
-            return 1/len(list(nx.articulation_points(
-                               main_comp.to_undirected())))
+            return 1 / len(list(nx.articulation_points(
+                main_comp.to_undirected())))
 
     def compute_metrics(self):
         """ returns a dictionary with a set of metrics that evaluate the
@@ -318,7 +380,7 @@ class Network():
         disconnected_nodes = 0
         percentiles = [10, 50, 90]
         for perc in percentiles:
-            metrics["perc_"+str(perc)] = ""
+            metrics["perc_" + str(perc)] = ""
         # Calculate cost of network
         self.cost = 0
         for n in self.graph.nodes(data=True):
@@ -329,30 +391,27 @@ class Network():
             if not b:
                 disconnected_nodes += 1
             else:
-                perc = int(100*counter/len(min_bandwidth))
+                perc = int(100 * counter / len(min_bandwidth))
                 counter += 1
                 if per_i < len(percentiles) and perc > percentiles[per_i]:
-                    metrics["perc_"+str(percentiles[per_i])] = b
+                    metrics["perc_" + str(percentiles[per_i])] = b
                     per_i += 1
 
-        metrics["connected_nodes"] = 1 + len(min_bandwidth) -\
-                                       disconnected_nodes
+        metrics["connected_nodes"] = 1 + len(min_bandwidth) - \
+                                     disconnected_nodes
         metrics["unconnected_ratio"] = disconnected_nodes / \
                                        (1 + len(min_bandwidth))
-        metrics["price_per_user"] = self.cost/metrics['connected_nodes']
+        metrics["price_per_user"] = self.cost / metrics['connected_nodes']
         metrics["price_per_mbit"] = metrics['price_per_user'] / \
-                                     (sum([x for x in min_bandwidth.values()])/len(min_bandwidth))
+                                    (sum([x for x in min_bandwidth.values()]) / len(min_bandwidth))
         metrics["cut_points"] = self.compute_equivalent_connectivity()
         # more useful metrics
         metrics["avg_link_per_antenna"] = numpy.mean([d['link_per_antenna']
-                                                     for _, _, d in
-                                                     self.graph.edges(
-                                                     data=True)])
+                                                      for _, _, d in
+                                                      self.graph.edges(
+                                                          data=True)])
         metrics["time_passed"] = datetime.datetime.now()
-        metrics["antennas_per_node"] = sum([len(x[1]['node'].antennas) 
-                                            for x in self.graph.nodes(data=True)])\
-                                                    /len(min_bandwidth)
+        metrics["antennas_per_node"] = sum([len(x[1]['node'].antennas)
+                                            for x in self.graph.nodes(data=True)]) \
+                                       / len(min_bandwidth)
         return metrics
-
-
-

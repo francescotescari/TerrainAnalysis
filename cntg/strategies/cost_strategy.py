@@ -1,6 +1,7 @@
 from multiprocessing import Pool
 import random
 
+import math
 import numpy
 
 from cn_generator import CN_Generator, NotInterestedNode, NoMoreNodes
@@ -9,26 +10,57 @@ from misc import Susceptible_Buffer
 import time
 from antenna import Antenna
 import code
-from node import LinkUnfeasibilty, AntennasExahustion, ChannelExahustion, CostChoice
+from node import LinkUnfeasibilty, AntennasExahustion, ChannelExahustion, CostChoice, HarmfulLink
 
 
 class CostStrategy(CN_Generator):
 
     def __init__(self, args, unk_args=None):
         self.sb = Susceptible_Buffer()
+        self.min_sn_bw = args.snminbw
         super().__init__(args=args, unk_args=unk_args)
+        self.min_sn_bw_policy = args.snminbw_policy
         self._post_init()
 
     def stop_condition(self):
-        if self.n:
-            return self.stop_condition_maxnodes() or self.stop_condition_minbw()
-        return self.stop_condition_minbw()
+        return self.stop_condition_maxnodes() or self.stop_condition_minbw() or self.stop_condition_supernodesbw()
+
+    def stop_condition_supernodesbw(self):
+        min_bw = self.net.compute_minimum_bandwidth()
+        return len(self.super_nodes) > 1 and len([n for n in self.super_nodes if min_bw[n.gid] > self.min_sn_bw]) == 0
 
     def get_newnode(self):
-        return self.get_random_node()
+        if not self.susceptible:
+            raise NoMoreNodes
+        nodes = []
+        cum_weights = []
+        w = 0
+        for n in self.susceptible:
+            weight = n.get_weight()
+            if weight <= 0:
+                continue
+            nodes.append(n)
+            w += weight
+            cum_weights.append(w)
+        node = random.choices(nodes, cum_weights=cum_weights)[0]
+        self.susceptible.remove(node)
+        if node.cost_choice == CostChoice.NOT_INTERESTED:
+            if self.show_level >= 1:
+                self.add_node(node, False)
+            raise NotInterestedNode
+        return node
 
     def restructure(self):
         return self.restructure_edgeeffect_mt()
+
+    def good_condition(self):
+        if self.min_sn_bw_policy != 'strict':
+            return True
+        self.net.compute_minimum_bandwidth()
+        for node in self.super_nodes:
+            if self.net.graph.nodes[node.gid]['min_bw'] < self.min_sn_bw:
+                return False
+        return True
 
     def add_links_leaf(self, node, visible_links):
         visible_links.sort(key=lambda x: x['loss'], reverse=True)
@@ -46,7 +78,7 @@ class CostStrategy(CN_Generator):
                 self.noloss_cache[node].add(link['dst'])
                 node.set_fail(e.msg)
                 break
-            except (AntennasExahustion, ChannelExahustion) as e:
+            except (AntennasExahustion, ChannelExahustion, HarmfulLink) as e:
                 # If the antennas/channel of dst are finished i can try with another node
                 self.noloss_cache[node].add(link['dst'])
                 node.set_fail(e.msg)
@@ -58,27 +90,32 @@ class CostStrategy(CN_Generator):
 
     def add_links_super(self, node, visible_links):
         result = set()
-        building = node.building
         # Value of the bw of the net before the update
         min_bw = self.net.compute_minimum_bandwidth()
         # Let's create a dict that associate each link to a new net object.
-        metrics = self.pool.starmap(self.net.calc_metric,
-                                    [(link, self.node_for(link['src'])) for link in visible_links])
+        metrics = self.pool.map(self.net.calc_metric,
+                                [link for link in visible_links])
         # Filter out unwanted links
         clean_metrics = []
         # destination_set = self.super_nodes if new_node.cost_choice == CostChoice.SUPER_NODE else self.leaf_nodes
         for m in metrics:
-            assert building == m['link']['src']  # link source is the building, right?
+            assert node == m['link']['src']  # link source is the node, right?
             if m['min_bw'] == 0:
-                print("First Node")
                 # This is the first node we add so we have to ignore the metric and add it
                 self.add_node(node)
-                src_ant = self.add_link(m['link'])
+                try:
+                    src_ant = self.add_link(m['link'])
+                except HarmfulLink:
+                    # first link is enough to put net in bad condition? Weird
+                    self.noloss_cache[node].add(m['link']['dst'])
+                    self.remove_node(node, True)
+                    node.set_fail('Harmful link')
+                    return False
                 return True
             if not m['min_bw']:
                 # If is none there was an exception (link unaddable) thus we add it to cache
                 # or if a leaf is trying to connect to the gateway
-                self.noloss_cache[building].add(m['link']['dst'])
+                self.noloss_cache[node].add(m['link']['dst'])
             else:
                 clean_metrics.append(m)
         # We want the link that maximizes the difference of the worse case
@@ -93,12 +130,22 @@ class CostStrategy(CN_Generator):
                                                 m['link']['loss']),
                                  reverse=True)
         links = [m['link'] for m in ordered_metrics]
-        link = links.pop()
-        print("Choosen link", link)
-        result.add(link['dst'])
+        src_ant = None
+        link = None
         self.add_node(node)
-        # Don't need to try since the unvalid link have been excluded by calc_metric()
-        src_ant = self.add_link(link)
+        while links:
+            link = links.pop()
+            # Link could be harmful to the network good condition
+            try:
+                src_ant = self.add_link(link)
+            except HarmfulLink:
+                continue
+            break
+        if not src_ant:
+            node.set_fail('Harmful link')
+            self.remove_node(node, True)
+            return False
+        result.add(link['dst'])
         # Add the remaining links if needed
         link_in_viewshed = [l for l in links
                             if src_ant.check_node_vis(l['src_orient'])]
@@ -108,7 +155,7 @@ class CostStrategy(CN_Generator):
             visible_links.remove(link)  # remove it from visible_links af
             try:
                 self.add_link(link, reverse=True)
-            except (LinkUnfeasibilty, AntennasExahustion, ChannelExahustion) as e:
+            except (LinkUnfeasibilty, AntennasExahustion, ChannelExahustion, HarmfulLink) as e:
                 print(e.msg)
             else:
                 result.add(link['dst'])
@@ -117,26 +164,31 @@ class CostStrategy(CN_Generator):
         return result
 
     def add_links(self, new_node):
-        building = new_node.building
-        available_buildings = list(self.super_nodes.values())
+        min_bw = self.net.compute_minimum_bandwidth()
+        available_nodes = [n for n in self.super_nodes if min_bw[n.gid] > self.min_sn_bw]
+        noloss = self.noloss_cache[new_node]
+        already_tested_nodes = len([n for n in available_nodes if n in noloss])
         is_leaf = new_node.cost_choice is CostChoice.LEAF_NODE
         if not is_leaf:
-            available_buildings.append(self.gw_node.building)
+            available_nodes.append(self.gw_node)
         # returns all the potential links in LoS with the new node
         print("Leaf nodes: %d, Super nodes: %d" % (len(self.leaf_nodes), len(self.super_nodes)))
-        print("testing node %r, against %d potential nodes,"
+        print("testing node %r, against %d potential nodes, "
               "already tested against %d nodes" %
-              (building, len(available_buildings) - len(self.noloss_cache[building]),
-               len(self.noloss_cache[building])))
-        print("Super nodes to attach to: ", self.super_nodes.keys())
+              (new_node, len(available_nodes) - already_tested_nodes,
+               already_tested_nodes))
+        # print("Super nodes to attach to: ", self.super_nodes.keys())
         # time.sleep(0.1)
         visible_links = [link for link in self.check_connectivity(
-            available_buildings, building) if link]
+            available_nodes, new_node) if link]
         if not visible_links:
             new_node.set_fail("No visible links")
             return False
-        return self.add_links_leaf(new_node,
-                                   visible_links) if is_leaf else self.add_links_super(
+        res = self.add_links_leaf(new_node,
+                                  visible_links) if is_leaf else self.add_links_super(
             new_node, visible_links)
-
-
+        if not res:
+            self.fail_map[new_node] = self.round
+        else:
+            self.fail_map = {}
+        return res

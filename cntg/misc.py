@@ -41,7 +41,8 @@ class BuildingUtils:
     def get_building_volume(building):
         shape = building.shape()
         metric_shape = transform(BuildingUtils.project, shape)
-        return metric_shape.area * 1
+        # print(metric_shape.area, building.get_height())
+        return metric_shape.area * building.get_height()
 
     @staticmethod
     def project_to_4326(building):

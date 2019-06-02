@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 import numpy
 from cost_model import IstatCostModel, CostError, MetricType, ConstCostModel
 from scipy.stats import norm
-from geoalchemy2.shape import from_shape, to_shape
+from libterrain.building import DataUnavailable
 
 from misc import BuildingUtils
 from node import CostChoice
@@ -15,6 +15,7 @@ from node import CostChoice
 
 class CostInterfaceError(CostError):
     """Raised from cost-related function errors"""
+    pass
 
 
 class CostInterface:
@@ -58,10 +59,13 @@ class IstatCostInterface(CostInterface):
         # get all the istat models intersecting the area
         result = self.session.query(IstatCostModel).filter(IstatCostModel.geom.ST_Intersects(area)).first()
         if result is not None:
-            print("Loading building of istat area: ", result.gid)
+            print("Loading buildings of istat area: ", result.gid)
             buildings = result.load_buildings(self.bi)
             for building in buildings:
-                self.cache[building.gid] = self.apply_model(building, result, self.parameters)
+                try:
+                    self.cache[building.gid] = self.apply_model(building, result, self.parameters)
+                except CostError:
+                    pass
         return result
 
     def get_model(self, building):
@@ -134,7 +138,7 @@ class SegmentCostParam(CostParam):
 
 class AppliedCostModel:
     @staticmethod
-    def weighted_avg_std(values, weights):
+    def _weighted_avg_std(values, weights):
         if len(values) == 0 or len(values) != len(weights):
             raise ValueError("Invalid number of weights" if values else "Empty value list")
         average = numpy.average(values, weights=weights)
@@ -143,7 +147,7 @@ class AppliedCostModel:
 
     @staticmethod
     def normalize_std_dev(x):
-        return (3 / (1 + math.exp(-1 / 2 * (math.sqrt(x))))) - 1.4
+        return (3 / (1 + math.exp(-1 / 2 * (2 * x)))) - 1.4
 
     def __init__(self, building, model, params):
         self.model = model
@@ -154,34 +158,40 @@ class AppliedCostModel:
         self.weight = 0 if model is None else model.get_weight()
 
     def applied_metrics(self):
-        return {key: val[0] for key, val in self.model.get_metrics().items()}
+        return {key: val[0] for key, val in self.model.get_metrics_cached().items()}
 
     def get_mean_std_percentage(self):
         metrics = self.applied_metrics()
         normalized, weights = [], []
+
         for name, param in self.params.items():
-            try:
-                metric = metrics[name]
-            except IndexError:
-                raise CostError("Unknown model metric: {}".format(name))
+            metric = metrics[name]
             prc = param.normalize(metric)
             wei = param.weight
             self.properties["Param " + name] = "Val:{:.2f} - Norm:{:.2f} - Wei:{:.2f}".format(metric, prc, wei)
             normalized.append(prc)
             weights.append(wei)
-        # print(normalized)
-        return self.weighted_avg_std(normalized, weights)
+        avg = numpy.average(normalized, weights=weights)
+        total_distance = 0
+        distances = []
+        for v in normalized:
+            d = abs(v - avg)
+            distances.append(d)
+            total_distance += d
+        for i in range(len(weights)):
+            weights[i] *= (1 - distances[i] / total_distance)
+        return self._weighted_avg_std(normalized, weights)
 
     def get_probabilities(self):
         if self.probabilities is None:
             avg, std = self.get_mean_std_percentage()
-            std = self.model.get_std_dev() + std
+            std = (self.model.get_std_dev() + std)/2
             self.properties['Average interest'] = avg
             self.properties['Std interest'] = std
             # print(mean, std)
             # print(self.model.get_std_dev())
             std = self.normalize_std_dev(std)
-            self.properties['New std'] = std
+            self.properties['Normalized std'] = std
             # print(std)
             self.probabilities = norm(avg, std).cdf([0, 1])
         return self.probabilities
@@ -190,14 +200,21 @@ class AppliedCostModel:
 class AppliedVolumeModel(AppliedCostModel):
     def __init__(self, building, model, params):
         super().__init__(building, model, params)
-        volume = BuildingUtils.get_building_volume(self.building)
+        try:
+            volume = BuildingUtils.get_building_volume(self.building)
+            if volume <= 0:
+                raise DataUnavailable('Invalid volume: %s' % volume)
+            total_volume = self.model.get_buildings_volume()
+            if total_volume < volume:
+                raise DataUnavailable('Invalid total volume: %s < %s' % (total_volume, volume))
+        except DataUnavailable as e:
+            raise CostInterfaceError('Failed to calculate volumes: %s' % e) from e
         self.properties["Volume"] = volume
-        total_volume = self.model.get_buildings_volume()
         self.factor = volume / total_volume
         self.weight *= self.factor
 
     def applied_metrics(self):
-        metrics = self.model.get_metrics()
+        metrics = self.model.get_metrics_cached()
         met = {}
         for key, val in metrics.items():
             value = val[0]
