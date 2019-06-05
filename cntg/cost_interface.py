@@ -178,8 +178,9 @@ class AppliedCostModel:
             d = abs(v - avg)
             distances.append(d)
             total_distance += d
-        for i in range(len(weights)):
-            weights[i] *= (1 - distances[i] / total_distance)
+        if total_distance > 0:
+            for i in range(len(weights)):
+                weights[i] *= (1 - distances[i] / total_distance)
         return self._weighted_avg_std(normalized, weights)
 
     def get_probabilities(self):

@@ -15,9 +15,12 @@ class CostStrategyAggressive(CostStrategy):
 
     def add_linkable_nodes(self, linkable):
         while linkable:
-            print("Trying to connect waiting nodes to new nodes: ", linkable)
-            if not self.waiting_nodes:
+            self.net.compute_minimum_bandwidth()
+            linkable = [n for n in linkable if (n.cost_choice is CostChoice.SUPER_NODE and self.net.graph.nodes[n.gid][
+                'min_bw'] > self.min_sn_bw)]
+            if not self.waiting_nodes or len(linkable) == 0:
                 return True
+            print("Trying to connect waiting nodes to new nodes: ", linkable)
             nodes = []
             wei = []
             tw = 0
@@ -42,8 +45,10 @@ class CostStrategyAggressive(CostStrategy):
                     if self.stop_condition():
                         return True
                     if not is_leaf:
-                        linkable.append(node)
                         added_super.append(node)
+                        self.net.compute_minimum_bandwidth()
+                        if self.net.graph.nodes[node.gid]['min_bw'] > self.min_sn_bw:
+                            linkable.append(node)
                 else:
                     self.add_node(node, False)
             linkable = added_super

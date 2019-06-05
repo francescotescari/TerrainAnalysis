@@ -14,6 +14,7 @@ from node import LinkUnfeasibilty, AntennasExahustion, ChannelExahustion, CostCh
 
 
 class CostStrategy(CN_Generator):
+    additional_html = '<style>.pbar{width:200px;height:20px;margin:0!important;padding:0!important;border:0!important;position:relative;overflow:visible;white-space:nowrap}.pptr{position:absolute;top:-16px;color:red;display:block;font-size:24px}.pbar div{display:inline-block;width:20%;height:100%;margin:0!important;padding:0!important;border:0!important}.ni{background-color:grey}.ln{background-color:green}.sn{background-color:#00f}</style>'
 
     def __init__(self, args, unk_args=None):
         self.sb = Susceptible_Buffer()
@@ -42,6 +43,8 @@ class CostStrategy(CN_Generator):
             nodes.append(n)
             w += weight
             cum_weights.append(w)
+        if len(nodes) == 0:
+            raise NoMoreNodes
         node = random.choices(nodes, cum_weights=cum_weights)[0]
         self.susceptible.remove(node)
         if node.cost_choice == CostChoice.NOT_INTERESTED:

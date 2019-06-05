@@ -81,9 +81,9 @@ class Network():
         sid = link['src'].gid
         did = link['dst'].gid
         edge = self.graph.get_edge_data(sid, did)
-        src_node = self.graph.node[sid]['node']
+        src_node = self.graph.nodes[sid]['node']
         src_ant = edge['src_ant']
-        dst_node = self.graph.node[did]['node']
+        dst_node = self.graph.nodes[did]['node']
         dst_ant = edge['dst_ant']
         self.graph.remove_edge(sid, did)
         self.graph.remove_edge(did, sid)
@@ -117,44 +117,32 @@ class Network():
         if src_antenna:
             for l in self.graph.out_edges(link['src'].gid, data=True):
                 if l[2]['dst_ant'] == src_antenna:
-                    if l[2]['src_ant'] == dst_antenna:
-                        l[2]['interfering_links'] = set(src_int + dst_int)
-                    else:
-                        try:
-                            l[2]['interfering_links'].update(src_int)
-                        except Exception:
-                            l[2]['interfering_links'] = set(src_int)
+                    try:
+                        l[2]['interfering_links'].update(src_int)
+                    except Exception:
+                        l[2]['interfering_links'] = set(src_int)
                     l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
             for l in self.graph.in_edges(link['src'].gid, data=True):
                 if l[2]['src_ant'] == src_antenna:
-                    if l[2]['dst_ant'] == dst_antenna:
-                        l[2]['interfering_links'] = set(src_int + dst_int)
-                    else:
-                        try:
-                            l[2]['interfering_links'].update(src_int)
-                        except Exception:
-                            l[2]['interfering_links'] = set(src_int)
+                    try:
+                        l[2]['interfering_links'].update(src_int)
+                    except Exception:
+                        l[2]['interfering_links'] = set(src_int)
                     l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
         if dst_antenna:
             for l in self.graph.out_edges(link['dst'].gid, data=True):
                 if l[2]['src_ant'] == dst_antenna:
-                    if l[2]['dst_ant'] == src_antenna:
-                        l[2]['interfering_links'] = set(src_int + dst_int)
-                    else:
-                        try:
-                            l[2]['interfering_links'].update(dst_int)
-                        except Exception:
-                            l[2]['interfering_links'] = set(dst_int)
+                    try:
+                        l[2]['interfering_links'].update(dst_int)
+                    except Exception:
+                        l[2]['interfering_links'] = set(dst_int)
                     l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
             for l in self.graph.in_edges(link['dst'].gid, data=True):
                 if l[2]['dst_ant'] == dst_antenna:
-                    if l[2]['src_ant'] == dst_antenna:
-                        l[2]['interfering_links'] = set(src_int + dst_int)
-                    else:
-                        try:
-                            l[2]['interfering_links'].update(dst_int)
-                        except Exception:
-                            l[2]['interfering_links'] = set(dst_int)
+                    try:
+                        l[2]['interfering_links'].update(dst_int)
+                    except Exception:
+                        l[2]['interfering_links'] = set(dst_int)
                     l[2]['link_per_antenna'] = len(l[2]['interfering_links'])
 
     def add_link_generic(self, link, attrs={}, reverse=False, existing=False):
@@ -184,8 +172,14 @@ class Network():
     def _add_link(self, link, attrs={}):
         # Search if there's an antenna usable at the destination
         dst_node = link['dst']
-        dst_ant = dst_node.get_best_dst_antenna(link)
         src_node = link['src']
+        # Check if there's a free channel on both (intersection)
+        free_channels = set(dst_node.free_channels) & set(src_node.free_channels)
+        try:
+            pref_channel = random.sample(free_channels, 1)[0]
+        except ValueError:
+            pref_channel = None
+        dst_ant = dst_node.get_best_dst_antenna(link, pref_channel=pref_channel)
         src_ant = src_node.add_antenna(loss=link['loss'],
                                        orientation=link['src_orient'],
                                        device=dst_ant.ubnt_device,

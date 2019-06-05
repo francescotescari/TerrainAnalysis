@@ -49,39 +49,19 @@ class Node:
     def gateway_node(max_ant, building):
         return Node(building, max_ant, properties={'Gateway': 'true'})
 
-    @staticmethod
-    def by_applied_cost_model(max_ant, applied_model):
-        if applied_model is None:
-            raise TypeError("Cannot create cost node: applied model object is None")
-        ths = applied_model.get_probabilities()
-        cost_choice = random.choices((CostChoice.NOT_INTERESTED, CostChoice.LEAF_NODE, CostChoice.SUPER_NODE),
-                                          cum_weights=(ths[0], ths[1], 1))[0]
-        if cost_choice is CostChoice.NOT_INTERESTED:
-            max_ant = 0
-        elif cost_choice is CostChoice.LEAF_NODE:
-            max_ant = 1
-        force_device = ['AM-PowerBeam5AC300ISO'] if cost_choice is CostChoice.LEAF_NODE else None
-        properties = {} if applied_model.properties is None else applied_model.properties
-        properties['Probabilities'] = '{:.1f}% - {:.1f}% - {:.1f}%'.format(ths[0] * 100,
-                                                                                (ths[1] - ths[0]) * 100,
-                                                                                (1 - ths[1]) * 100)
-        return Node(applied_model.building, max_ant, ths=ths, cost_choice=cost_choice, model=applied_model, properties=properties, available_devices=force_device)
-
-    def __init__(self, building, max_ant, ths=None, cost_choice=None, model=None, properties=None, available_devices=None):
+    def __init__(self, building, max_ant, cost_choice=None, properties=None):
         if building is None:
             raise TypeError("None building in node is not allowed")
-        self.ths = ths
         self.antennas = []
         self.max_ant = max_ant
         self.free_channels = wifi.channels[:]
         self.building = building
-        self.available_devices = available_devices
+        self.available_devices = None
         self.add_failed = False
         self.properties = properties if isinstance(properties, collections.Mapping) else {}
         self.properties['Building gid'] = building.gid
         self.gid = building.gid << 8
         self.cost_choice = cost_choice
-        self.model = model
 
     def cost(self):
         cost = node_fixed_cost
@@ -122,7 +102,7 @@ class Node:
         self.antennas.append(ant)
         return ant
 
-    def get_best_dst_antenna(self, link, force_device=None):
+    def get_best_dst_antenna(self, link, pref_channel=None, force_device=None):
         av_devs = self.available_devices if force_device is None else force_device
         # filter the antennas that are directed toward the src
         # and on the same channel
@@ -136,7 +116,7 @@ class Node:
                                                                         target=x.ubnt_device[0])[0])
             result = best_ant
         else:
-            result = self.add_antenna(loss=link['loss'], orientation=link['dst_orient'], force_device=av_devs)
+            result = self.add_antenna(loss=link['loss'], orientation=link['dst_orient'], force_device=av_devs, channel=pref_channel)
         return result
 
     def _pick_channel(self):
@@ -158,11 +138,7 @@ class Node:
                 res += str(key) + ": " + str(value) + "<br>"
             except Exception:
                 pass
-        res+=self.prob_bars()
         return res.replace("'", '"')
-
-    def get_weight(self):
-        return 0 if self.model is None else self.model.weight
 
     def get_color(self):
         try:
@@ -171,14 +147,6 @@ class Node:
             return self.cost_choice.color()
         except Exception:
             return "black"
-
-    def prob_bars(self):
-        if self.ths is None or len(self.ths) < 2:
-            return ''
-        p1 = self.ths[0]
-        p2 = self.ths[1] - self.ths[0]
-        p3 = 1 - self.ths[1]
-        return self.BAR_HTML.format(p1 * 200, p2 * 200, p3 * 200)
 
     def set_fail(self, cause):
         print("Failed to link node {}: {}".format(self.gid, cause))
@@ -200,6 +168,36 @@ class Node:
         return self.gid
 
 
+class CostNode(Node):
 
+    def __init__(self, max_ant, applied_model):
+        if applied_model is None:
+            raise TypeError("Cannot create cost node: applied model object is None")
+        ths = applied_model.get_probabilities()
+        cost_choice = random.choices((CostChoice.NOT_INTERESTED, CostChoice.LEAF_NODE, CostChoice.SUPER_NODE),
+                                     cum_weights=(ths[0], ths[1], 1))[0]
+        if cost_choice is CostChoice.NOT_INTERESTED:
+            max_ant = 0
+        elif cost_choice is CostChoice.LEAF_NODE:
+            max_ant = 1
+        self.model = applied_model
+        self.ths = ths
+        super().__init__(applied_model.building, max_ant, cost_choice=cost_choice, properties=applied_model.properties)
+        self.available_devices = ['AM-PowerBeam5AC300ISO'] if cost_choice is CostChoice.LEAF_NODE else None
+        self.properties['Probabilities'] = '{:.1f}% - {:.1f}% - {:.1f}%'.format(ths[0] * 100,
+                                                                                (ths[1] - ths[0]) * 100,
+                                                                                (1 - ths[1]) * 100)
 
+    def prob_bars(self):
+        if self.ths is None or len(self.ths) < 2:
+            return ''
+        p1 = self.ths[0]
+        p2 = self.ths[1] - self.ths[0]
+        p3 = 1 - self.ths[1]
+        return self.BAR_HTML.format(p1 * 200, p2 * 200, p3 * 200)
 
+    def props_str(self):
+        return super().props_str() + self.prob_bars()
+
+    def get_weight(self):
+        return 0 if self.model is None else self.model.weight

@@ -8,7 +8,7 @@ from multiprocessing import Pool
 from cost_interface import IstatCostInterface, CostInterfaceError, ConstCostInterface
 from cost_model import CostError
 from misc import NoGWError
-from node import AntennasExahustion, ChannelExahustion, LinkUnfeasibilty, CostChoice, HarmfulLink, Node
+from node import AntennasExahustion, ChannelExahustion, LinkUnfeasibilty, CostChoice, HarmfulLink, Node, CostNode
 import shapely
 import random
 import time
@@ -46,8 +46,7 @@ def poor_mans_color_gamma(bitrate):
 
 
 class CN_Generator():
-
-    BAR_STYLE = '<style>.pbar{width:200px;height:20px;margin:0!important;padding:0!important;border:0!important;position:relative;overflow:visible;white-space:nowrap}.pptr{position:absolute;top:-16px;color:red;display:block;font-size:24px}.pbar div{display:inline-block;width:20%;height:100%;margin:0!important;padding:0!important;border:0!important}.ni{background-color:grey}.ln{background-color:green}.sn{background-color:#00f}</style>'
+    additional_html = ''
 
     def __init__(self, args, unk_args={}):
 
@@ -138,14 +137,7 @@ class CN_Generator():
     def get_random_node(self):
         if not self.susceptible:
             raise NoMoreNodes
-        nodes = []
-        cum_weights = []
-        w = 0
-        for n in self.susceptible:
-            nodes.append(n)
-            w += n.get_weight()
-            cum_weights.append(w)
-        node = random.choices(nodes, cum_weights=cum_weights)[0]
+        node = random.choices(self.susceptible)[0]
         self.susceptible.remove(node)
         if node.cost_choice == CostChoice.NOT_INTERESTED:
             if self.show_level >= 1:
@@ -203,7 +195,6 @@ class CN_Generator():
 
     def add_links(self, new_node):
         raise NotImplementedError
-
 
     def check_connectivity(self, nodes, node):
         nodes_to_test = set(nodes) - self.noloss_cache[node]
@@ -326,10 +317,10 @@ class CN_Generator():
                 self.super_nodes.add(node)
             elif node.cost_choice is CostChoice.LEAF_NODE:
                 self.leaf_nodes.add(node)
-        res = self.net.add_node(node, attrs={'event': self.event_counter+1})
+        res = self.net.add_node(node, attrs={'event': self.event_counter + 1})
         if res and is_linked:
             self.event_counter += 1
-            print("EVENT", self.event_counter, "Node added ",node.gid)
+            print("EVENT", self.event_counter, "Node added ", node.gid)
         return res
 
     def remove_node(self, node, remove_event=False):
@@ -353,11 +344,11 @@ class CN_Generator():
         min_bw = self.net.compute_minimum_bandwidth()
         s = ''
         for edge in self.net.graph.edges.data():
-            s += "EDGE "+str(edge[0])+", "+str(edge[1])+'\n'
-            s += "INTER"+ str([(l[0], l[1]) for l in edge[2]['interfering_links']])+"\n"
+            s += "EDGE " + str(edge[0]) + ", " + str(edge[1]) + '\n'
+            s += "INTER" + str([(l[0], l[1]) for l in edge[2]['interfering_links']]) + "\n"
         s2 = s
         res = self.net.add_link_generic(link=link,
-                                        attrs={'event': self.event_counter+1},
+                                        attrs={'event': self.event_counter + 1},
                                         existing=existing,
                                         reverse=reverse)
         if not self.good_condition():
@@ -366,13 +357,13 @@ class CN_Generator():
                 self.remove_link(link)
             raise HarmfulLink
         self.event_counter += 1
-        print("EVENT", self.event_counter, "Link added ",link)
+        print("EVENT", self.event_counter, "Link added ", link)
         return res
 
     def remove_link(self, link, remove_event=False):
         res = self.net.del_link(link)
         if res and remove_event:
-            self.event_counter-=1
+            self.event_counter -= 1
         return res
 
     def save_graph(self):
@@ -488,7 +479,7 @@ class CN_Generator():
     def plot_map(self):
         self.graph_to_leaflet()
         mapname = self.mapfolder + "map-" + self.filename + ".html"
-        self.map.get_root().html.add_child(folium.Element(self.BAR_STYLE))
+        self.map.get_root().html.add_child(folium.Element(self.additional_html))
         self.map.save(mapname)
         return mapname
 
@@ -525,20 +516,19 @@ class CN_Generator():
                 return ConstCostInterface(CostChoice.LEAF_NODE)
         raise CostInterfaceError("Invalid cost interface name: " + name)
 
-
     def gen_nodes_from_building(self, building):
         try:
             h = building.get_height()
             if h < 0:
                 raise DataUnavailable("Invalid height: ", h)
-            return [Node.by_applied_cost_model(self.args.max_dev, self.CI.get_cached(building))]
+            return [CostNode(self.args.max_dev, self.CI.get_cached(building))]
         except (CostError, DataUnavailable) as e:
             self.ignored.add(building)
             print("Ignoring building %d cause %s: %s" % (building.gid, type(e).__name__, e))
             return None
 
     def load_nodes_from_buildings(self, buildings):
-        susceptibles = set(buildings)-self.ignored
+        susceptibles = set(buildings) - self.ignored
         for building in susceptibles:
             if building.gid == self.gw_node.building.gid:
                 continue
@@ -551,9 +541,9 @@ class CN_Generator():
                 self.susceptible.update(nodes)
             else:
                 for node in nodes:
-                    if not (node in self.super_nodes) and not (node in self.leaf_nodes) and (node.cost_choice is not CostChoice.NOT_INTERESTED):
+                    if not (node in self.super_nodes) and not (node in self.leaf_nodes) and (
+                            node.cost_choice is not CostChoice.NOT_INTERESTED):
                         self.susceptible.add(node)
-
 
 
 def killtree(pid, including_parent=False):
