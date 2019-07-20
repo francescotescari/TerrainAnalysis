@@ -18,17 +18,11 @@ class CostStrategy(CN_Generator):
 
     def __init__(self, args, unk_args=None):
         self.sb = Susceptible_Buffer()
-        self.min_sn_bw = args.snminbw
         super().__init__(args=args, unk_args=unk_args)
-        self.min_sn_bw_policy = args.snminbw_policy
         self._post_init()
 
     def stop_condition(self):
-        return self.stop_condition_maxnodes() or self.stop_condition_minbw() or self.stop_condition_supernodesbw()
-
-    def stop_condition_supernodesbw(self):
-        min_bw = self.net.compute_minimum_bandwidth()
-        return len(self.super_nodes) > 1 and len([n for n in self.super_nodes if min_bw[n.gid] > self.min_sn_bw]) == 0
+        return self.stop_condition_maxnodes() or self.stop_condition_minbw()
 
     def get_newnode(self):
         if not self.susceptible:
@@ -55,15 +49,6 @@ class CostStrategy(CN_Generator):
 
     def restructure(self):
         return self.restructure_edgeeffect_mt()
-
-    def good_condition(self):
-        if self.min_sn_bw_policy != 'strict':
-            return True
-        self.net.compute_minimum_bandwidth()
-        for node in self.super_nodes:
-            if self.net.graph.nodes[node.gid]['min_bw'] < self.min_sn_bw:
-                return False
-        return True
 
     def add_links_leaf(self, node, visible_links):
         visible_links.sort(key=lambda x: x['loss'], reverse=True)
@@ -167,23 +152,22 @@ class CostStrategy(CN_Generator):
         return result
 
     def add_links(self, new_node):
-        min_bw = self.net.compute_minimum_bandwidth()
-        available_nodes = [n for n in self.super_nodes if min_bw[n.gid] > self.min_sn_bw]
         noloss = self.noloss_cache[new_node]
-        already_tested_nodes = len([n for n in available_nodes if n in noloss])
+        already_tested_nodes = len([n for n in self.super_nodes if n in noloss])
+        node_to_test = [n for n in self.super_nodes]
         is_leaf = new_node.cost_choice is CostChoice.LEAF_NODE
         if not is_leaf:
-            available_nodes.append(self.gw_node)
+            node_to_test.append(self.gw_node)
         # returns all the potential links in LoS with the new node
         print("Leaf nodes: %d, Super nodes: %d" % (len(self.leaf_nodes), len(self.super_nodes)))
         print("testing node %r, against %d potential nodes, "
               "already tested against %d nodes" %
-              (new_node, len(available_nodes) - already_tested_nodes,
+              (new_node, len(node_to_test) - already_tested_nodes,
                already_tested_nodes))
         # print("Super nodes to attach to: ", self.super_nodes.keys())
         # time.sleep(0.1)
         visible_links = [link for link in self.check_connectivity(
-            available_nodes, new_node) if link]
+            node_to_test, new_node) if link]
         if not visible_links:
             new_node.set_fail("No visible links")
             return False

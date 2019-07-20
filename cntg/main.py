@@ -65,9 +65,10 @@ def parse_args():
                         help="Cost interface used to calculate probabilities of node type in cost sharing mode", required=True)
     parser.add_argument("--show_level",
                         help="Show nodes type level. 0 = linked to newtork, 1 = also not interested, 2 also failed",
-                        default=1, type=int)
-    parser.add_argument("--snminbw", help="Minbw accepted by a supernode", default=5, type=float)
-    parser.add_argument("--snminbw_policy", help="Policy on minbw of super nodes in cost sharing strategies", default=None, choices={'strict','tolerant'})
+                        default=0, type=int)
+    parser.add_argument("--eco_tb_name", help="Table name of economics data to use in CostInterface",
+                        default=None)
+    parser.add_argument("--sort_notlinked", help="Algorithm used to sort not linked node in CostAggressive strategy", default=3, type=int, choices=[0,1,2,3])
     parser.set_defaults(plot=False)
     args, unknown = parser.parse_known_args()
     return args, unknown

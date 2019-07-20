@@ -32,7 +32,8 @@ class Network():
     def main_sg(self):
         # Return the connected subgraph belonging to the gateway
         # Always return something, otherwise something very bad is happening
-        sgs = nx.connected_component_subgraphs(self.graph.to_undirected())
+        G = self.graph.to_undirected()
+        sgs = (G.subgraph(c).copy() for c in nx.connected_components(G))
         for sg in sgs:
             if self.gateway in sg:
                 return sg
@@ -174,12 +175,8 @@ class Network():
         dst_node = link['dst']
         src_node = link['src']
         # Check if there's a free channel on both (intersection)
-        free_channels = set(dst_node.free_channels) & set(src_node.free_channels)
-        try:
-            pref_channel = random.sample(free_channels, 1)[0]
-        except ValueError:
-            pref_channel = None
-        dst_ant = dst_node.get_best_dst_antenna(link, pref_channel=pref_channel)
+        free_channels = set(src_node.free_channels)
+        dst_ant = dst_node.get_best_dst_antenna(link, pref_channels=free_channels)
         src_ant = src_node.add_antenna(loss=link['loss'],
                                        orientation=link['src_orient'],
                                        device=dst_ant.ubnt_device,
@@ -351,13 +348,15 @@ class Network():
         """ if C_0 is the component including the gateway, then if graph
         connectivity > 1, return connectivity, else return 1/the number of
         cut-points. High = robust (many node need to fail to partition) """
-        if len(self.graph) < 2:
+        if len(self.graph) <= 2:
             return 1
         main_comp = None
-        for c in nx.connected_component_subgraphs(self.graph.to_undirected()):
+        G = self.graph.to_undirected()
+        for c in (G.subgraph(c).copy() for c in nx.connected_components(G)):
             if self.gateway in c.nodes():
                 main_comp = c
-
+        if len(main_comp) <= 2:
+            return 1
         connectivity = nx.node_connectivity(main_comp)
         if connectivity > 1:
             return connectivity

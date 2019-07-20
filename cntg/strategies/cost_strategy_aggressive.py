@@ -7,30 +7,46 @@ from strategies.cost_strategy import CostStrategy
 
 class CostStrategyAggressive(CostStrategy):
 
+
+
+    def __init__(self, args, unk_args={}):
+        super().__init__(args, unk_args)
+        sort = int(getattr(args, 'sort_unattached', 3)) % 4
+        self.sort_alg = sort % 2
+        self.sort_type = 0 if sort < 2 else 1
+
     def add_links(self, new_node):
         res = super().add_links(new_node)
         if res and new_node.cost_choice is CostChoice.SUPER_NODE:
             self.add_linkable_nodes([new_node])
         return res
 
-    def add_linkable_nodes(self, linkable):
-        while linkable:
-            self.net.compute_minimum_bandwidth()
-            linkable = [n for n in linkable if (n.cost_choice is CostChoice.SUPER_NODE and self.net.graph.nodes[n.gid][
-                'min_bw'] > self.min_sn_bw)]
-            if not self.waiting_nodes or len(linkable) == 0:
-                return True
-            print("Trying to connect waiting nodes to new nodes: ", linkable)
-            nodes = []
+    def sort_nodes_to_attach(self, nodes):
+        if self.sort_alg == 1:
+            sortable = []
             wei = []
             tw = 0
-            for n in self.waiting_nodes:
+            for n in nodes:
                 w = n.get_weight()
                 if w > 0:
-                    nodes.append(n)
+                    sortable.append(n)
                     wei.append(w)
                     tw += w
-            sorted_wait_nodes = numpy.random.choice(nodes, len(nodes), False, [w / tw for w in wei])
+            sorted_nodes = numpy.random.choice(sortable, len(sortable), False, [w / tw for w in wei])
+        else:
+            sorted_nodes = [n for n in nodes]
+        if self.sort_type == 1:
+            res = [n for n in sorted_nodes if n.cost_choice is CostChoice.SUPER_NODE] + [n for n in sorted_nodes if n.cost_choice is not CostChoice.SUPER_NODE]
+        else:
+            res = sorted_nodes
+        return res
+
+    def add_linkable_nodes(self, linkable):
+        while linkable:
+            if not self.waiting_nodes:
+                return True
+            print("Trying to connect waiting nodes to new nodes: ", linkable)
+            sorted_wait_nodes = self.sort_nodes_to_attach(self.waiting_nodes)
             added_super = []
             for node in sorted_wait_nodes:
                 visible_links = [link for link in self.check_connectivity(linkable, node) if link]
@@ -46,9 +62,7 @@ class CostStrategyAggressive(CostStrategy):
                         return True
                     if not is_leaf:
                         added_super.append(node)
-                        self.net.compute_minimum_bandwidth()
-                        if self.net.graph.nodes[node.gid]['min_bw'] > self.min_sn_bw:
-                            linkable.append(node)
+                        linkable.append(node)
                 else:
                     self.add_node(node, False)
             linkable = added_super

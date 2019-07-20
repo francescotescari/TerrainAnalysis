@@ -1,7 +1,4 @@
 import libterrain as lt
-from geoalchemy2.shape import to_shape
-from libterrain.building import Building, DataUnavailable
-from shapely.geometry.polygon import Polygon
 from shapely.geometry import Point
 from multiprocessing import Pool
 
@@ -13,16 +10,13 @@ import shapely
 import random
 import time
 import networkx as nx
-import configargparse
 import network
 import folium
 from folium import plugins
 import ubiquiti as ubnt
 from edgeffect import EdgeEffect
-import multiprocessing as mp
 import os
 import psutil
-import datetime
 import wifi
 import yaml
 from collections import defaultdict
@@ -58,7 +52,7 @@ class CN_Generator():
         self.pool = None
         self.net = network.Network()
         with open("gws.yml", "r") as gwf:
-            self.gwd = yaml.load(gwf)
+            self.gwd = yaml.load(gwf, Loader=yaml.FullLoader)
         self.args = args
         self.n = self.args.max_size
         self.e = self.args.expansion
@@ -79,6 +73,7 @@ class CN_Generator():
         self.debug_file = None
         random.seed(self.random_seed)
         self.net.set_maxdev(self.args.max_dev)
+        self.max_dev = self.args.max_dev
         self.datafolder = self.args.base_folder + "data/"
         self.graphfolder = self.args.base_folder + "graph/"
         self.mapfolder = self.args.base_folder + "map/"
@@ -100,12 +95,16 @@ class CN_Generator():
         self.noloss_cache = defaultdict(set)
         ubnt.load_devices()
         self.pool = Pool(self.P)
-        self.CI = self.choose_cost_interface(self.args)
+        self.eco_tb_name = args.eco_tb_name
+        self.ci_name = args.cost_interface
+        self.CI = self.choose_cost_interface()
         self.show_level = args.show_level
         self.db_nodes = {}
         self.waiting_nodes = set()
         self.gw = None
         self.ignored = set()
+        self.below_bw_nodes = 0
+
 
     def _post_init(self):
         self.gw_node = self.get_gateway()
@@ -137,7 +136,7 @@ class CN_Generator():
     def get_random_node(self):
         if not self.susceptible:
             raise NoMoreNodes
-        node = random.choices(self.susceptible)[0]
+        node = random.choices([n for n in self.susceptible])[0]
         self.susceptible.remove(node)
         if node.cost_choice == CostChoice.NOT_INTERESTED:
             if self.show_level >= 1:
@@ -152,10 +151,8 @@ class CN_Generator():
         for g in self.leaf_nodes:
             geoms.append(g.building.shape())
         self.sb.set_shape(geoms)
-        # db_buildings = self.t.get_buildings(self.sb.get_buffer(self.e))
         db_buildings = self.BI.get_buildings(shape=self.sb.get_buffer(self.e), area=self.polygon_area)
         self.load_nodes_from_buildings(db_buildings)
-        # self.susceptible = (set(db_buildings) - set(self.super_nodes.values()) - set(self.leaf_nodes.values()))
 
     def get_newnode(self):
         raise NotImplementedError
@@ -167,6 +164,8 @@ class CN_Generator():
         return self.n and ((len(self.super_nodes) + len(self.leaf_nodes)) >= self.n)
 
     def stop_condition_minbw(self, rounds=1):
+        if getattr(self, 'B', None) is None:
+            return False
         # in case you don't want to test the stop condition every round
         total_nodes = len(self.super_nodes) + len(self.leaf_nodes)
         if total_nodes % rounds != 0 or \
@@ -180,13 +179,17 @@ class CN_Generator():
         self.net.compute_minimum_bandwidth()
         # if the minimum bw of a node is less than the treshold stop
         nodes = self.super_nodes | self.leaf_nodes
+        below = set()
         for n in nodes:
             if n == self.gw_node:
                 continue
             try:
                 if self.net.graph.node[n.gid]['min_bw'] < bw:
                     self.below_bw_nodes += 1
+                    below.add((n, self.net.graph.node[n.gid]['min_bw']))
                     if self.below_bw_nodes / len(nodes) > self.B[1]:
+                        print(self.below_bw_nodes, len(nodes), self.B[1])
+                        print("Below BW nodes: ", below)
                         return True
             except KeyError:
                 # if the nod has no 'min_bw' means that it is not connected
@@ -257,8 +260,10 @@ class CN_Generator():
             killtree(pid)
             pass
         # save result
-        for k, v in self.net.compute_metrics().items():
-            print(k, v)
+        print("STOP", self.stop_condition_minbw(), self.stop_condition_maxnodes())
+        if len(self.net.graph.edges) > 0:
+            for k, v in self.net.compute_metrics().items():
+                print(k, v)
         if self.debug_file:
 
             dataname = self.datafolder + "data-" + self.filename + ".csv"
@@ -307,7 +312,7 @@ class CN_Generator():
             else:
                 max_links -= 1
                 if max_links <= 0:
-                    print("Restructured {} links".format(num_links))
+                    print("Restructured %d links" % num_links)
                     return
 
     def add_node(self, node, is_linked=True):
@@ -341,12 +346,6 @@ class CN_Generator():
         return True
 
     def add_link(self, link, existing=False, reverse=False, auto_remove=True):
-        min_bw = self.net.compute_minimum_bandwidth()
-        s = ''
-        for edge in self.net.graph.edges.data():
-            s += "EDGE " + str(edge[0]) + ", " + str(edge[1]) + '\n'
-            s += "INTER" + str([(l[0], l[1]) for l in edge[2]['interfering_links']]) + "\n"
-        s2 = s
         res = self.net.add_link_generic(link=link,
                                         attrs={'event': self.event_counter + 1},
                                         existing=existing,
@@ -500,14 +499,13 @@ class CN_Generator():
         print(len(self.net.graph), ",", ",".join(map(str, m.values())),
               file=self.debug_file)
 
-    def choose_cost_interface(self, args):
+    def choose_cost_interface(self):
         """Create a cost interface object based on args cost model"""
-        name = args.cost_interface
-        dsn = args.dsn
+        name = self.ci_name
         if name is None:
             raise CostInterfaceError("Missing --cost_interface [cost interface name] option")
         if name == 'istat':
-            return IstatCostInterface(dsn, self.BI)
+            return IstatCostInterface(self.BI, self.eco_tb_name)
         elif name.startswith("const_"):
             type = name[6:]
             if type == "super":
@@ -518,13 +516,10 @@ class CN_Generator():
 
     def gen_nodes_from_building(self, building):
         try:
-            h = building.get_height()
-            if h < 0:
-                raise DataUnavailable("Invalid height: ", h)
-            return [CostNode(self.args.max_dev, self.CI.get_cached(building))]
-        except (CostError, DataUnavailable) as e:
+            return [CostNode(self.max_dev, self.CI.get_cached(building))]
+        except CostError as e:
             self.ignored.add(building)
-            print("Ignoring building %d cause %s: %s" % (building.gid, type(e).__name__, e))
+            print("Ignoring building %d cause: %s" % (building.gid, e))
             return None
 
     def load_nodes_from_buildings(self, buildings):

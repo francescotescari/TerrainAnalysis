@@ -80,6 +80,7 @@ class Node:
 
     def check_channel(self, channel):
         if channel not in self.free_channels:
+            print("AASASAS", channel, self.free_channels)
             raise ChannelExahustion
         self.free_channels.remove(channel)
 
@@ -102,12 +103,12 @@ class Node:
         self.antennas.append(ant)
         return ant
 
-    def get_best_dst_antenna(self, link, pref_channel=None, force_device=None):
+    def get_best_dst_antenna(self, link, pref_channels=None, force_device=None):
         av_devs = self.available_devices if force_device is None else force_device
         # filter the antennas that are directed toward the src
         # and on the same channel
         visible_antennas = [ant for ant in self.antennas
-                            if ant.check_node_vis(link_angles=link['dst_orient'])]
+                            if (pref_channels is None or (ant.channel in pref_channels)) and ant.check_node_vis(link_angles=link['dst_orient'])]
 
         # sort them by the bitrate and take the fastest one
         if visible_antennas:
@@ -116,6 +117,11 @@ class Node:
                                                                         target=x.ubnt_device[0])[0])
             result = best_ant
         else:
+            try:
+                pref_channels = pref_channels & set(self.free_channels)
+                pref_channel = random.sample(pref_channels, 1)[0]
+            except Exception:
+                pref_channel = None
             result = self.add_antenna(loss=link['loss'], orientation=link['dst_orient'], force_device=av_devs, channel=pref_channel)
         return result
 
