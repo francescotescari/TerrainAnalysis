@@ -1,6 +1,6 @@
 import math
 import numpy
-from scipy.stats import norm
+from scipy.stats import norm, truncnorm
 
 
 class CostError(Exception):
@@ -9,9 +9,10 @@ class CostError(Exception):
 
 
 class AppliedModel:
-    mitigate_outlier = (1, 1)  # [0] = distance_{0} added to each distance, [1] = exponent of distance
-    limit_std = (0.1, 1.161, 2)  # limiting function for std: (min, max, speed to limit)
-    prop_domain = (-2,3)
+    mitigate_outlier = (0.5, 2)  # [0] = distance_{0} added to each distance, [1] = exponent of distance
+    limit_std = (0.0001, 1.55, 1.8)  # limiting function for std: (min, max, speed to limit)
+    prop_domain = (-1.3, 2.3)  # interest domain limits (min, max)
+    flat_uncertainty = 0.1
 
     @staticmethod
     def _weighted_avg_std(values, weights):
@@ -67,22 +68,18 @@ class AppliedModel:
             avg, std = self._get_mean_std_percentage()
             if self.model_std is not None:
                 std = (self.model_std + std) / 2
+            if self.flat_uncertainty is not None:
+                std += self.flat_uncertainty
             self.properties['Average interest'] = avg
             self.properties['Std interest'] = std
             if self.limit_std is not None:
                 std = self.limit_std_dev(std)
                 self.properties['Limited std'] = std
             if self.prop_domain is not None:
-                ths = norm(avg, std).cdf([self.prop_domain[0], 0, 1, self.prop_domain[1]])
-                if ths[1] == 1:
-                    self.probabilities = (1, 1)
-                elif ths[2] == 0:
-                    self.probabilities = (0, 0)
-                else:
-                    s = ths[3]-ths[0]
-                    self.probabilities = ((ths[1] - ths[0])/ s, (ths[2] - ths[0]) / s)
+                a, b = (self.prop_domain[0] - avg) / std, (self.prop_domain[1] - avg) / std
+                self.probabilities = truncnorm.cdf([0, 1], a=a, b=b, loc=avg, scale=std)
             else:
-                self.probabilities = norm(avg, std).cdf([0,1])
+                self.probabilities = norm(avg, std).cdf([0, 1])
         return self.probabilities
 
 
@@ -174,4 +171,4 @@ class IstatCostModel(CostModel):
               22.5 * self.pp_year20_25 + 27.5 * self.pp_year25_30 + 32.5 * self.pp_year30_35 + 37.5 * self.pp_year35_40 + \
               42.5 * self.pp_year40_45 + 47.5 * self.pp_year45_50 + 52.5 * self.pp_year50_55 + 57.5 * self.pp_year55_60 + \
               62.5 * self.pp_year60_65 + 67.5 * self.pp_year65_70 + 72.5 * self.pp_year70_75 + 80 * self.pp_year75_200
-        return age / self.pp_number
+        return (age / self.pp_number) if self.pp_number > 0 else 0

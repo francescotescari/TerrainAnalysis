@@ -375,9 +375,7 @@ class Network():
         for perc in percentiles:
             metrics["perc_" + str(perc)] = ""
         # Calculate cost of network
-        self.cost = 0
-        for n in self.graph.nodes(data=True):
-            self.cost += n[1]['node'].cost()
+        self.cost = sum((self.graph.nodes[n]['node'].cost() for n in self.main_sg()))
         counter = 1
         per_i = 0
         for d, b in sorted(min_bandwidth.items(), key=lambda x: x[1]):

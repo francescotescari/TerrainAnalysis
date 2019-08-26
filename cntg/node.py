@@ -42,7 +42,7 @@ class CostChoice(Enum):
 
 
 class Node:
-    BAR_HTML = '<div class="pbar"><div class="ni" style="width:{:.0f}px"></div><div class="ln" style="width:{:.0f}px"></div><div class="sn" style="width:{:.0f}px"></div></div>'
+
     ant_height = 5
 
     @staticmethod
@@ -56,12 +56,12 @@ class Node:
         self.max_ant = max_ant
         self.free_channels = wifi.channels[:]
         self.building = building
-        self.available_devices = None
         self.add_failed = False
         self.properties = properties if isinstance(properties, collections.Mapping) else {}
         self.properties['Building gid'] = building.gid
         self.gid = building.gid << 8
         self.cost_choice = cost_choice
+        self.available_devices = ['AM-NanoStation5ACL'] if cost_choice is CostChoice.LEAF_NODE else None
 
     def cost(self):
         cost = node_fixed_cost
@@ -80,7 +80,6 @@ class Node:
 
     def check_channel(self, channel):
         if channel not in self.free_channels:
-            print("AASASAS", channel, self.free_channels)
             raise ChannelExahustion
         self.free_channels.remove(channel)
 
@@ -175,6 +174,7 @@ class Node:
 
 
 class CostNode(Node):
+    BAR_HTML = '<div class="pbar"><div class="ni" style="width:{:.0f}px"></div><div class="ln" style="width:{:.0f}px"></div><div class="sn" style="width:{:.0f}px"></div></div>'
 
     def __init__(self, max_ant, applied_model):
         if applied_model is None:
@@ -189,7 +189,6 @@ class CostNode(Node):
         self.model = applied_model
         self.ths = ths
         super().__init__(applied_model.building, max_ant, cost_choice=cost_choice, properties=applied_model.properties)
-        self.available_devices = ['AM-PowerBeam5AC300ISO'] if cost_choice is CostChoice.LEAF_NODE else None
         self.properties['Probabilities'] = '{:.1f}% - {:.1f}% - {:.1f}%'.format(ths[0] * 100,
                                                                                 (ths[1] - ths[0]) * 100,
                                                                                 (1 - ths[1]) * 100)
