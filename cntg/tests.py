@@ -310,6 +310,8 @@ class TestAppliedModel(unittest.TestCase):
             b = mval[1]
             c = mval[2]
             met = {"test_param": a, "test_param_2": b, "test_param_3": c}
+            ap_model = AppliedModel
+            ap_model.prop_domain = None
             for points in [(0, 10, 0, 20, 4, -1), (100, 20, 20, 0, 54, 45), (1000, 10, -9999, 88, 9, 12),
                            (123, -23, 0, 0, 0, 0)]:
                 x = points[0]
@@ -319,31 +321,31 @@ class TestAppliedModel(unittest.TestCase):
                 x3 = points[4]
                 y3 = points[5]
                 model = FakeIstatModel(0, met)
-                avg, std = AppliedModel(building, {"test_param": PolyCostParam([(x, y)])}, met,
+                avg, std = ap_model(building, {"test_param": PolyCostParam([(x, y)])}, met,
                                         model_std=model.get_std_dev())._get_mean_std_percentage()
                 self.assertAlmostEqual(avg, y)
                 self.assertAlmostEqual(std, 0)
-                avg, std = AppliedModel(building, {"test_param": PolyCostParam([(x, y), (x + 10, y + 10)]),
+                avg, std = ap_model(building, {"test_param": PolyCostParam([(x, y), (x + 10, y + 10)]),
                                                    "test_param_2": PolyCostParam([(x2, y2)])}, met,
                                         model_std=model.get_std_dev())._get_mean_std_percentage()
-                aavg, astd = AppliedModel._weighted_avg_std([y - x + a, y2], [1, 1])
+                aavg, astd = ap_model._weighted_avg_std([y - x + a, y2], [1, 1])
                 self.assertAlmostEqual(avg, aavg)
                 self.assertAlmostEqual(std, astd)
-                avg, std = AppliedModel(building, {"test_param": PolyCostParam([(x, y)], weight=8),
+                avg, std = ap_model(building, {"test_param": PolyCostParam([(x, y)], weight=8),
                                                    "test_param_2": PolyCostParam([(x2, y2)], weight=2)}, met,
                                         model_std=model.get_std_dev())._get_mean_std_percentage()
                 self.assertGreaterEqual(avg, min(y, y2))
                 self.assertLessEqual(avg, max(y, y2))
-                avg, std = AppliedModel(building, {"test_param": PolyCostParam([(x, y), (1, 9)], weight=0),
+                avg, std = ap_model(building, {"test_param": PolyCostParam([(x, y), (1, 9)], weight=0),
                                                    "test_param_2": PolyCostParam([(x2, y2)], weight=2)}, met,
                                         model_std=model.get_std_dev())._get_mean_std_percentage()
                 self.assertAlmostEqual(avg, y2)
                 self.assertAlmostEqual(std, 0)
                 with self.assertRaises(ValueError):
-                    avg, std = AppliedModel(building, {"test_param": PolyCostParam([(x, y)], weight=-3),
+                    avg, std = ap_model(building, {"test_param": PolyCostParam([(x, y)], weight=-3),
                                                        "test_param_2": PolyCostParam([(x2, y2)], weight=2)}, met,
                                             model_std=model.get_std_dev())._get_mean_std_percentage()
-                avg, std = AppliedModel(building, {"test_param": PolyCostParam([(x, y)], weight=0),
+                avg, std = ap_model(building, {"test_param": PolyCostParam([(x, y)], weight=0),
                                                    "test_param_2": PolyCostParam([(x2, y2)], weight=2),
                                                    "test_param_3": PolyCostParam([(x3, y3), (x3 + 1, y3 + 1)])}, met,
                                         model_std=model.get_std_dev())._get_mean_std_percentage()
@@ -459,8 +461,7 @@ def create_test_strategy(strategy, buildings=[], link_gen=None, gateway=None, co
 class TestIstatInterface(unittest.TestCase):
     # model
     huge_model = FakeIstatModel(None, {"test_param": 3000, "test_param2": 40})
-    tiny_model = FakeIstatModel(None,
-                                {"test_param": -3000, "test_param2": 40})
+    tiny_model = FakeIstatModel(None, {"test_param": -3000, "test_param2": 40})
     interface = FakeIstatInterface(huge_model, {"test_param": PolyCostParam([(0, 0), (1, 1)]),
                                                 "test_param2": PolyCostParam([(0, 0)])})
     interface.use_cache = False
@@ -468,6 +469,7 @@ class TestIstatInterface(unittest.TestCase):
     # set model buildings
     huge_model.buildings = build_building_array([10, 20, 30, 40, 50])
     tiny_model.buildings = build_building_array([10, 20, 30, 40, 50])
+    interface.ap_model.prop_domain = None
 
     def test_huge_thresholds(self):
         self.interface.test_model = self.huge_model

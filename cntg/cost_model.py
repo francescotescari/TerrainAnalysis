@@ -39,13 +39,29 @@ class AppliedModel:
             self.std_norm_c = self.limit_std[2]
 
     def _get_adjusted_data(self, values, weights):
-        new_weights = weights
-        if self.mitigate_outlier is not None :
+        invalid_weights = [w for w in weights if w < 0]
+        if len(invalid_weights) > 0:
+            raise ValueError("Invalid weights: %s" % invalid_weights)
+        if self.mitigate_outlier is not None:
+            nweights = []
             avg = numpy.average(values, weights=weights)
-            new_weights = []
             for i in range(len(weights)):
-                new_weights.append(weights[i] / (abs(values[i] - avg)**self.mitigate_outlier[1] + self.mitigate_outlier[0]))
-        return values, new_weights
+                nweights.append(
+                    weights[i] / (abs(values[i] - avg) ** self.mitigate_outlier[1] + self.mitigate_outlier[0]))
+            weights = nweights
+        nvalues = []
+        nweights = []
+        for i in range(len(values)):
+            if weights[i] > 0:
+                val = values[i]
+                if self.prop_domain is not None:
+                    if val < self.prop_domain[0]:
+                        val = self.prop_domain[0]
+                    elif val > self.prop_domain[1]:
+                        val = self.prop_domain[1]
+                nvalues.append(val)
+                nweights.append(weights[i])
+        return nvalues, nweights
 
     def _get_mean_std_percentage(self):
         normalized, weights = [], []
